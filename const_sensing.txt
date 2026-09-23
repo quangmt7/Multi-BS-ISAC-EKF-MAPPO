@@ -1,0 +1,9 @@
+gamma_ref = 10dB
+sigma_r_ref = 0.5m
+sigma_theta_ref = 1/2pi radian : np.deg2rad(1)
+sigma_phi_ref = 1/2pi radian : np.deg2rad(1)
+
+Với hai cái tỷ lệ khẩu độ số ap_theta_ratio, ap_phi_ratio hãy để ban đầu là 1 hêt,
+sau đó ta sẽ set nó thành một tập để ngẫu nhiên chọn trong [0.8; 1.2]
+
+Với mọi tham số, nên viết số # <đơn vị> để rõ hơn, và nên nhóm lại để dễ kiểm soát
