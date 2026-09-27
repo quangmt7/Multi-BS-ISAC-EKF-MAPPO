@@ -1,0 +1,81 @@
+
+
+mappo_parameters:
+  ppo:
+    lr_actor: 3.0e-4                   # Tốc độ học của mạng Actor (Learning rate)
+    lr_critic: 5.0e-4                  # Tốc độ học của mạng Centralized Critic
+    gamma: 0.99                        # Hệ số chiết khấu phần thưởng tương lai (Discount factor)
+    gae_lambda: 0.95                   # Hệ số Generalized Advantage Estimation (GAE lambda)
+    clip_epsilon: 0.2                  # Biên độ cắt PPO clip ratio (epsilon)
+    ppo_epochs: 10                     # Số lượt epoch tối ưu hóa trên buffer mỗi lần cập nhật
+    num_mini_batch: 4                  # Số lượng mini-batch phân tách từ rollout buffer
+    batch_size: 128                    # Kích thước mỗi batch huấn luyện
+    entropy_coef: 0.01                 # Trọng số khuyến khích khám phá (Entropy bonus coefficient)
+    value_loss_coef: 0.5               # Trọng số hàm mất mát của Critic (Value loss coefficient)
+    max_grad_norm: 0.5                 # Ngưỡng cắt gradient tránh bùng nổ (Gradient clipping)
+    use_clipped_value_loss: true       # Sử dụng clipped value loss để huấn luyện Critic ổn định hơn
+    use_huber_loss: true               # Sử dụng hàm mất mát Huber thay cho MSE để chống outlier
+    huber_delta: 10.0                  # Ngưỡng chuyển đổi tuyến tính của Huber loss
+    use_linear_lr_decay: false         # Giảm dần tốc độ học tuyến tính theo tiến độ training
+
+ 
+  action_space:
+    num_discrete_choices: 11           # 1 (idle) + 5 (targets) + 5 (UEs) = 11 (với M=5, K=5)
+    power_action_type: "continuous"    # Công suất liên tục: Gaussian distribution / Squashed Gaussian
+    power_min_watt: 0.0                # Công suất phát tối thiểu trên mỗi PRB (W)
+    # Công suất phát tối đa trên mỗi BS được lấy theo max_tx_power_dbm từ system.yaml (33 dBm ~ 2.0 W)
+
+  network:
+    actor:
+      hidden_dims: [256, 256]          # Kích thước các lớp ẩn của Actor (BS local policy)
+      activation: "relu"               # Hàm kích hoạt: "relu" hoặc "tanh"
+      use_layer_norm: true             # Sử dụng Layer Normalization
+      orthogonal_init: true            # Khởi tạo trọng số trực giao (Orthogonal Initialization)
+      gain: 0.01                       # Gain cho lớp output của Actor
+
+    critic:
+      hidden_dims: [512, 256, 128]     # Kích thước các lớp ẩn của Centralized Critic (Global State)
+      activation: "relu"               # Hàm kích hoạt
+      use_layer_norm: true             # Sử dụng Layer Normalization
+      orthogonal_init: true            # Khởi tạo trọng số trực giao
+      gain: 1.0                        # Gain cho lớp output của Critic
+
+
+  reward_weights:
+    alpha_aoi: 0.4                     # alpha: Trọng số của độ tươi mới thông tin (AoI)
+    beta_uncertainty: 0.4              # beta: Trọng số của độ bất định EKF (Position & Velocity)
+    gamma_power: 0.2                   # gamma: Trọng số của công suất phát tiêu thụ
+
+
+  normalization:
+    a_max: 20.0                        # A_max: Giá trị chuẩn hóa cực đại của AoI (khe thời gian)
+    u_pos_max: 20.0                    # U^{pos}_{max}: Giá trị chuẩn hóa bất định vị trí (m^2)
+    u_vel_max: 10.0                    # U^{vel}_{max}: Giá trị chuẩn hóa bất định vận tốc (m^2/s^2)
+    p_max_watt: 2.0                    # P_max: Công suất chuẩn hóa (2.0 W tương ứng 33 dBm)
+
+
+  penalties:
+    penalty_rate_qos: 5.0              # Phạt khi không đảm bảo tốc độ tối thiểu R_k < R_k^{min} của UE
+    penalty_sensing_reliability: 5.0   # Phạt khi xác suất sensing thành công P^{suc}_m < P_m^{min}
+    penalty_uncertainty: 5.0           # Phạt khi độ bất định EKF vượt quá ngưỡng U^{pos,max} hoặc U^{vel,max}
+    penalty_power_budget: 10.0         # Phạt nặng khi tổng công suất của BS vượt quá P_b^{max}
+
+
+  qos_constraints:
+    r_min_ue_mbps: 1.0                 # R_k^{min}: Tốc độ truyền thông tối thiểu yêu cầu cho mỗi UE (Mbps)
+
+
+  interference:
+    c2s_leakage_eta0: 1.0e-3           # eta_0: Mức coupling tham chiếu rò rỉ C2S (-30 dB = 10^-3)
+    c2s_leakage_alpha: 1.0             # alpha: Tốc độ suy giảm leakage theo khoảng cách PRB
+    ibi_coupling_eta: 1.0e-2           # eta_{IBI}: Mức suy hao/coupling nhiễu giữa các trạm BS (-20 dB = 10^-2)
+
+  training:
+    total_episodes: 1000               # Tổng số episode huấn luyện
+    episode_length: 100                # T: Số khe thời gian (time slots) trong mỗi episode
+    rollout_threads: 1                 # Số lượng môi trường song song (nếu dùng vector env)
+    save_interval: 50                  # Lưu model checkpoint sau mỗi N episode
+    eval_interval: 20                  # Đánh giá hiệu năng sau mỗi N episode
+    log_interval: 10                   # Ghi log kết quả huấn luyện sau mỗi N episode
+    device: "cpu"                     # Thiết bị huấn luyện: "cuda" hoặc "cpu"
+    seed: 42                           # Hạt giống ngẫu nhiên (seed) để tái lập kết quả
