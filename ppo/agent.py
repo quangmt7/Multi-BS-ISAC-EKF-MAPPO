@@ -1,14 +1,13 @@
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.distributions import Categorical, Normal
 
 
 class Actor(nn.Module):
     """
     Decentralized Actor network with parameter sharing across base stations (BSs).
-    Features a dual-head structure for hybrid action spaces: discrete PRB assignment and continuous power allocation.
-
     Note:
         Operates under decentralized execution: each BS executes the policy using only its local observation.
     """
@@ -37,9 +36,10 @@ class Actor(nn.Module):
             nn.Tanh()
         )
         
-        self.prb_head =nn.Linear(h_dim, self.n_prb*self.num_choices) # sum of prb choice 
-        self.power_mean= nn.Linear(h_dim, self.n_prb) # n numbers of power allocation for n prb
-        self.power_logstd = nn.Parameter(torch.zeros(1, self.n_prb))
+        self.prb_head = nn.Linear(h_dim, self.n_prb * self.num_choices) # sum of prb choice 
+        self.power_mean = nn.Linear(h_dim, self.n_prb) # n numbers of power allocation for n prb
+        # Khởi tạo logstd = -1.0 (std = exp(-1.0) ≈ 0.36) giúp độ tản ban đầu vừa vặn với miền [0, 1]
+        self.power_logstd = nn.Parameter(torch.full((1, self.n_prb), -1.0))
          
     def forward(self, obs, action_prb=None, action_power=None):
         """
@@ -59,11 +59,11 @@ class Actor(nn.Module):
         Note:
             If actions are None, the method samples new actions. If provided, it evaluates their log-probabilities.
         """
-        # 1. foward through backbone
+        # 1. forward through backbone
         feat = self.backbone(obs)  # [batch, 128]
+
         # First branch: PRB (discrete)
         prb_logits = self.prb_head(feat).reshape(-1, self.n_prb, self.num_choices) 
-        # Categorical 
         prb_dist = Categorical(logits=prb_logits)
         
         if action_prb is None:
@@ -73,17 +73,23 @@ class Actor(nn.Module):
         logp_prb = prb_dist.log_prob(action_prb).sum(dim=-1)
         entropy_prb = prb_dist.entropy().sum(dim=-1)
     
-        # Second branch: Power ( continuous)
-        # Sigmoid function
-        mean = torch.sigmoid(self.power_mean(feat))
-        std = torch.exp(self.power_logstd).expand_as(mean)
-        power_dist = Normal(mean, std)
+        # Second branch: Power (continuous)
+        raw_mean = self.power_mean(feat)
+        std = torch.exp(self.power_logstd).expand_as(raw_mean)
+        power_dist = Normal(raw_mean, std)
+
         if action_power is None:
-            action_power = power_dist.sample()  
-            
-        # calculate log_prob of power branch
-        logp_power = power_dist.log_prob(action_power).sum(dim=-1)
+            u = power_dist.sample()
+            action_power = torch.sigmoid(u)
+        else:
+            u = torch.logit(action_power.clamp(1e-6, 1.0 - 1e-6))
+
+        #softplus
+        # ln(da/du) = -(softplus(u) + softplus(-u))
+        log_jac = -(F.softplus(u) + F.softplus(-u))
+        logp_power = (power_dist.log_prob(u) - log_jac).sum(dim=-1)
         entropy_power = power_dist.entropy().sum(dim=-1)
+
         # result
         total_log_prob = logp_prb + logp_power
         total_entropy = entropy_prb + entropy_power
@@ -105,7 +111,7 @@ class Critic(nn.Module):
 
         Argument:
             global_state_dim (int): Dimension of the global state vector.
-            h_dim (int): Hidden dimension for MLP layers. Default: 256.
+            h_dim (int): Hidden dimension for MLP layers. 
 
         Return:
             None.
@@ -156,10 +162,11 @@ class MultiAgentRolloutBuffer:
         self.actions_pwr = []
         self.log_probs = []
         self.rewards = []
-        self.dones = []
+        self.terminateds = []
+        self.truncateds = []
         self.values = []
 
-    def push(self, local_obs, global_state, act_prb, act_pwr, logp, reward, done, value):
+    def push(self, local_obs, global_state, act_prb, act_pwr, logp, reward, terminated, truncated, value):
         """
         Append a single-step multi-agent transition into the buffer.
 
@@ -170,7 +177,8 @@ class MultiAgentRolloutBuffer:
             act_pwr (np.ndarray)[B, n_prb]: Continuous power allocation decisions for all BSs.
             logp (np.ndarray)[B]: Joint log-probabilities of actions for each BS.
             reward (float): Shared team reward scalar received from the environment.
-            done (bool or float): Episode termination flag.
+            terminated (bool or float): Terminal failure flag (e.g. lost target).
+            truncated (bool or float): Timeout truncation flag (e.g. max steps reached).
             value (float): State-value V(S) predicted by the Centralized Critic.
 
         Return:
@@ -182,7 +190,8 @@ class MultiAgentRolloutBuffer:
         self.actions_pwr.append(act_pwr)
         self.log_probs.append(logp)
         self.rewards.append(reward)
-        self.dones.append(done)
+        self.terminateds.append(terminated)
+        self.truncateds.append(truncated)
         self.values.append(value)
 
     def clear(self):
@@ -201,7 +210,8 @@ class MultiAgentRolloutBuffer:
         self.actions_pwr.clear()
         self.log_probs.clear()
         self.rewards.clear()
-        self.dones.clear()
+        self.terminateds.clear()
+        self.truncateds.clear()
         self.values.clear()
 
     def get(self, device="cpu"):
@@ -218,7 +228,8 @@ class MultiAgentRolloutBuffer:
             b_act_pwr (torch.Tensor)[T, B, n_prb]: Batched continuous power allocations (dtype float32).
             b_logprobs (torch.Tensor)[T, B]: Batched action log-probabilities.
             b_rewards (torch.Tensor)[T]: Batched team rewards.
-            b_dones (torch.Tensor)[T]: Batched termination flags.
+            b_terminateds (torch.Tensor)[T]: Batched terminal state flags.
+            b_truncateds (torch.Tensor)[T]: Batched timeout truncation flags.
             b_values (torch.Tensor)[T]: Batched Centralized Critic value estimates.
         """
         b_obs = torch.tensor(np.array(self.local_obs), dtype=torch.float32, device=device)
@@ -227,10 +238,11 @@ class MultiAgentRolloutBuffer:
         b_act_pwr = torch.tensor(np.array(self.actions_pwr), dtype=torch.float32, device=device)
         b_logprobs = torch.tensor(np.array(self.log_probs), dtype=torch.float32, device=device)
         b_rewards = torch.tensor(np.array(self.rewards), dtype=torch.float32, device=device)
-        b_dones = torch.tensor(np.array(self.dones), dtype=torch.float32, device=device)
+        b_terminateds = torch.tensor(np.array(self.terminateds), dtype=torch.float32, device=device)
+        b_truncateds = torch.tensor(np.array(self.truncateds), dtype=torch.float32, device=device)
         b_values = torch.tensor(np.array(self.values), dtype=torch.float32, device=device)
 
-        return b_obs, b_states, b_act_prb, b_act_pwr, b_logprobs, b_rewards, b_dones, b_values
+        return b_obs, b_states, b_act_prb, b_act_pwr, b_logprobs, b_rewards, b_terminateds, b_truncateds, b_values
 
     def __len__(self):
         """
@@ -250,26 +262,7 @@ class MAPPOAgent:
     Multi-Agent Proximal Policy Optimization controller.
     Manages decentralized Actor policies with Parameter Sharing and a Centralized Critic for cooperative ISAC.
     """
-    def __init__(
-        self,
-        local_obs_dim,
-        global_state_dim,
-        n_prb,
-        num_targets,
-        num_ues,
-        num_bs,
-        lr_actor=3e-4,
-        lr_critic=3e-4,
-        gamma=0.99,
-        gae_lambda=0.95,
-        clip_coef=0.2,
-        ent_coef=0.01,
-        vf_coef=0.5,
-        max_grad_norm=0.5,
-        update_epochs=10,
-        batch_size=64,
-        device=None
-    ):
+    def __init__(self, config: dict, local_obs_dim, global_state_dim ):
         """
         Initialize networks, dual optimizers, and algorithmic hyperparameters for MAPPO.
 
@@ -280,42 +273,52 @@ class MAPPOAgent:
             num_targets (int): Number of mobile sensing targets.
             num_ues (int): Number of communication users (UEs).
             num_bs (int): Number of base stations (agents).
-            lr_actor (float): Learning rate for the Actor optimizer. Default: 3e-4.
-            lr_critic (float): Learning rate for the Critic optimizer. Default: 3e-4.
-            gamma (float): Discount factor for future rewards. Default: 0.99.
-            gae_lambda (float): Lambda parameter for Generalized Advantage Estimation. Default: 0.95.
-            clip_coef (float): PPO surrogate clipping threshold epsilon. Default: 0.2.
-            ent_coef (float): Entropy bonus coefficient. Default: 0.01.
-            vf_coef (float): Value loss coefficient. Default: 0.5.
-            max_grad_norm (float): Maximum norm for gradient clipping. Default: 0.5.
-            update_epochs (int): Number of optimization passes over rollout data. Default: 10.
-            batch_size (int): Minibatch size for gradient updates. Default: 64.
+            lr_actor (float): Learning rate for the Actor optimizer.
+            lr_critic (float): Learning rate for the Critic optimizer. 
+            gamma (float): Discount factor for future rewards.
+            gae_lambda (float): Lambda parameter for Generalized Advantage Estimation.
+            clip_coef (float): PPO surrogate clipping threshold epsilon.
+            ent_coef (float): Entropy bonus coefficient.
+            vf_coef (float): Value loss coefficient.
+            max_grad_norm (float): Maximum norm for gradient clipping.
+            update_epochs (int): Number of optimization passes over rollout data.
+            batch_size (int): Minibatch size for gradient updates.
             device (str, torch.device, or None): Device for tensor computations ('cpu', 'cuda', or None for auto).
 
         Return:
             None.
         """
-        if device is None:
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        else:
-            self.device = torch.device(device)
-        # Khởi tạo Actor, Critic, Optimizers và lưu hyperparameter
-        self.actornetwork = Actor(local_obs_dim, n_prb, num_targets, num_ues).to(self.device)
-        self.criticnetwork = Critic(global_state_dim).to(self.device)
+        self.config = config
+        # get system parameters
+        sys_config= config.get("system_parameters")
+        self.n_prb= sys_config["num_prb"]
+        self.num_targets= sys_config["num_target"]
+        self.num_ues= sys_config["num_ue"]
+        self.num_bs = sys_config["num_bs"]
+        # get mappo parameter
+        mappo_config= config.get("mappo_parameters")
+        ppo_config= mappo_config.get("ppo", {})
+        train_config = mappo_config.get("training", {})
         
-        self.actor_optimizer = torch.optim.Adam(self.actornetwork.parameters(), lr=lr_actor, eps=1e-5)
-        self.critic_optimizer = torch.optim.Adam(self.criticnetwork.parameters(), lr=lr_critic, eps=1e-5)
-
-
-        self.gamma = gamma
-        self.gae_lambda = gae_lambda
-        self.clip_coef = clip_coef
-        self.ent_coef = ent_coef
-        self.vf_coef = vf_coef
-        self.max_grad_norm = max_grad_norm
-        self.update_epochs = update_epochs
-        self.batch_size = batch_size
-
+        self.gamma= ppo_config.get("gamma")
+        self.gae_lambda = ppo_config.get("gae_lambda")
+        self.clip_coef = ppo_config.get("clip_epsilon")
+        self.ent_coef = ppo_config.get("entropy_coef")
+        self.vf_coef = ppo_config.get("value_loss_coef")
+        self.max_grad_norm = ppo_config.get("max_grad_norm")
+        self.update_epochs = ppo_config.get("ppo_epochs")
+        self.batch_size = ppo_config.get("batch_size")
+        # get device
+        device_str = train_config.get("device", "cpu")
+        self.device= torch.device("cuda" if (device_str =="cuda" and torch.cuda.is_available()) else "cpu")
+        
+        # actor, critic network and optimizers
+        self.actornetwork = Actor(local_obs_dim, self.n_prb, self.num_targets, self.num_ues).to(self.device)
+        self.criticnetwork= Critic(global_state_dim).to(self.device)
+        self.actor_optimizer= torch.optim.Adam(self.actornetwork.parameters(), lr= ppo_config.get("lr_actor"))
+        self.critic_optimizer= torch.optim.Adam(self.criticnetwork.parameters(), lr= ppo_config.get("lr_critic"))
+    
+    
     def select_action(self, local_obs_list, global_state):
         """
         Select actions for all B base stations and evaluate global state-value during environment interaction.
@@ -348,21 +351,17 @@ class MAPPOAgent:
                 val.squeeze().item()
             )
 
-    def compute_gae(self, buffer, next_global_state, next_done):
+    def compute_gae(self, buffer, next_global_state):
         """
         Compute Generalized Advantage Estimation (GAE) and discounted return targets backwards across rollout steps.
 
         Argument:
             buffer (MultiAgentRolloutBuffer): Rollout buffer holding T timesteps of multi-agent interactions.
             next_global_state (np.ndarray)[global_state_dim]: Global state of the timestep following the rollout (S_T).
-            next_done (bool or float): Done flag for the final transition.
 
         Return:
             advantages_t (torch.Tensor)[T]: Computed Generalized Advantage Estimations.
             returns_t (torch.Tensor)[T]: Discounted target returns for Critic training.
-
-        Note:
-            Bootstrap value is computed from Centralized Critic on next_global_state.
         """
         with torch.no_grad():
             next_state_t = torch.as_tensor(next_global_state, dtype=torch.float32, device=self.device)
@@ -371,7 +370,8 @@ class MAPPOAgent:
 
             next_val = self.criticnetwork(next_state_t).squeeze().item()
             rewards = buffer.rewards
-            dones = buffer.dones
+            terminateds = buffer.terminateds
+            truncateds = buffer.truncateds
             values = buffer.values
             T = len(rewards)
 
@@ -379,18 +379,15 @@ class MAPPOAgent:
             last_gaelam = 0.0
 
             for t in reversed(range(T)):
-                if t == T - 1:
-                    next_val_step = next_val
-                    next_nonterminal = 1.0 - float(next_done)
-                else:
-                    next_val_step = values[t + 1]
-                    next_nonterminal = 1.0 - float(dones[t])
+                next_val_step = next_val if (t == T - 1) else values[t + 1]
+                next_nonterminal = 1.0 - float(terminateds[t])
+                next_done = float(terminateds[t] or truncateds[t])
 
-                # TD Error: delta = r + gamma * V(s') - V(s)
+                # TD Error: delta = r + gamma * V(s') * (1 - terminated) - V(s)
                 delta = rewards[t] + self.gamma * next_val_step * next_nonterminal - values[t]
 
-                # GAE: A_t = delta + gamma * lambda * next_nonterminal * A_{t+1}
-                advantages[t] = last_gaelam = delta + self.gamma * self.gae_lambda * next_nonterminal * last_gaelam
+                # GAE: A_t = delta + gamma * lambda * (1 - done) * A_{t+1}
+                advantages[t] = last_gaelam = delta + self.gamma * self.gae_lambda * (1.0 - next_done) * last_gaelam
 
             returns = [adv + val for adv, val in zip(advantages, values)]
             # convert and return Advantages, Q 
@@ -399,14 +396,13 @@ class MAPPOAgent:
 
             return advantages_t, returns_t
         
-    def update(self, buffer, next_global_state, next_done):
+    def update(self, buffer, next_global_state):
         """
         Update Actor and Centralized Critic networks using PPO clipped loss over multiple epochs.
 
         Argument:
             buffer (MultiAgentRolloutBuffer): Buffer containing on-policy rollout transitions.
             next_global_state (np.ndarray)[global_state_dim]: Global state after rollout horizon.
-            next_done (bool or float): Done flag for the final transition.
 
         Return:
             metrics (dict): Dictionary containing average training losses:
@@ -418,8 +414,8 @@ class MAPPOAgent:
             Parameter Sharing flattens Actor samples into (T * B), whereas Centralized Critic trains on T global states.
         """
         
-        b_advantages, b_returns =self.compute_gae(buffer,next_global_state, next_done)
-        b_obs, b_states, b_act_prb, b_act_pwr, b_log_probs, _ , _ ,b_values = buffer.get(self.device)        
+        b_advantages, b_returns = self.compute_gae(buffer, next_global_state)
+        b_obs, b_states, b_act_prb, b_act_pwr, b_log_probs, _, _, _, b_values = buffer.get(self.device)        
         #normalization
         b_advantages = (b_advantages -b_advantages.mean())/ (b_advantages.std() + 1e-8)
         
