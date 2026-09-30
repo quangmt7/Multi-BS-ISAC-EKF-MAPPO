@@ -1,46 +1,114 @@
 
-
 system_parameters:
-  num_bs: 5                            # Số lượng trạm cơ sở (Base Stations - BS)
-  num_ue: 5                            # Số lượng người dùng truyền thông (UEs)
-  num_target: 5                        # Số lượng mục tiêu cần cảm biến/theo dõi (Targets)
-  num_prb: 100                         # Tổng số khối tài nguyên vật lý (PRB)
-  bandwidth_mhz: 100.0                 # Tổng băng thông hệ thống (MHz)
-  carrier_frequency_ghz: 3.5           # Tần số sóng mang trung tâm f_c (GHz)
-  subcarrier_spacing_khz: 30.0         # Khoảng cách giữa các sóng mang con (SCS, 5G Numerology mu=1)
-  prb_bandwidth_khz: 360.0             # Băng thông 1 PRB = 12 subcarriers * 30 kHz = 360 kHz
-  slot_duration_ms: 10.0               # Thời lượng một khe thời gian Delta t (ms) = 0.01 s
-  max_tx_power_dbm: 33.0               # Công suất phát cực đại của mỗi BS (dBm ~ 2.0 Watt)
-  noise_psd_dbm_hz: -174.0             # Mật độ phổ công suất tạp âm nhiệt N0 (dBm/Hz)
-  noise_figure_db: 7.0                 # Hệ số khuếch đại nhiễu đầu thu (Noise Figure)
+  # 1. Quy mô hệ thống (Network Entities & Sets)
+
+  num_bs: 5                            # B = 5 trạm BS
+  num_ue: 5                            # K = 5 người dùng truyền thông (UEs)
+  num_target: 5                        # M = 5 mục tiêu di động cần theo dõi (Targets)
+  num_prb: 100                         # N_PRB = 100 khối tài nguyên vật lý (PRBs)
 
 
+  # 2. Cấu hình vô tuyến và OFDM 5G NR (Radio Resources & Numerology)
+  # Băng tần 5G NR FR1 (Sub-6 GHz, ví dụ băng n78 3.5 GHz)
+  # SCS = 30 kHz (Numerology mu = 1), 1 PRB = 12 subcarriers * 30 kHz = 360 kHz
+
+  bandwidth_mhz: 100.0                 # Tổng băng thông hệ thống: 100.0 MHz
+  carrier_frequency_ghz: 3.5           # Tần số sóng mang trung tâm f_c = 3.5 GHz
+  subcarrier_spacing_khz: 30.0         # Khoảng cách sóng mang con (SCS) = 30.0 kHz
+  prb_bandwidth_khz: 360.0             # Băng thông 1 PRB: B_PRB = 360.0 kHz
+  slot_duration_ms: 10.0               # Thời lượng 1 khe thời gian: Delta t = 10.0 ms = 0.01 s
+  max_tx_power_dbm: 33.0               # Công suất phát tối đa mỗi BS: P_max = 33.0 dBm
+  max_tx_power_watt: 2.0               # P_max dạng tuyến tính = 2.0 Watt (tương ứng 33 dBm)
+
+ 
+  # 3. Tạp âm nhiệt và đặc tính máy thu (Thermal Noise & Receiver Properties)
+  # Phục vụ tính toán mẫu số SINR: B * N_0 
+ 
+  noise_psd_dbm_hz: -174.0             # Mật độ phổ tạp âm nhiệt: N_0 = -174.0 dBm/Hz
+  noise_figure_db: 7.0                 # Hệ số tạp âm máy thu: NF = 7.0 dB
+  noise_power_per_prb_dbm: -111.4      # Tạp âm trên 1 PRB: sigma^2 = -174 + 7 + 10*log10(360k) = -111.4 dBm
+  noise_power_per_prb_watt: 7.24e-15   # sigma^2 trên 1 PRB dạng tuyến tính (Watt)
+
+  # 4. Kênh truyền và mô hình nhiễu (Channel & Interference Models)
+ 
   channel_and_interference:
-    target_rcs_sqm: 1.0                # Diện tích phản xạ hiệu dụng radar của mục tiêu (RCS - m^2)
-    pathloss_exponent_comm: 3.5        # Số mũ suy hao đường truyền thông (Communication Pathloss)
-    pathloss_exponent_sensing: 2.0     # Số mũ suy hao một chiều radar (Two-way radar pathloss ~ d^-4)
-    antenna_gain_tx_dbi: 15.0          # Độ lợi ăng-ten phát của BS (dBi)
-    antenna_gain_rx_dbi: 15.0          # Độ lợi ăng-ten thu sensing của BS (dBi)
-    c2s_leakage_eta0: 1.0e-3           # eta_0: Mức rò rỉ C2S tham chiếu (-30 dB = 10^-3)
-    c2s_leakage_alpha: 1.0             # alpha: Hệ số suy giảm leakage theo khoảng cách PRB
-    ibi_coupling_eta: 1.0e-2           # eta_{IBI}: Mức ghép nối nhiễu liên trạm BS (-20 dB = 10^-2)
+    target_rcs_sqm: 1.0                # Diện tích phản xạ hiệu dụng radar (RCS) của target: sigma_rcs = 1.0 m^2
+    pathloss_exponent_comm: 3.5        # Số mũ suy hao kênh truyền thông: alpha_c = 3.5
+    pathloss_exponent_sensing: 2.0     # Số mũ suy hao 1 chiều radar: alpha_s = 2.0 (suy hao 2 chiều ~ d^4)
+    antenna_gain_tx_dbi: 15.0          # Độ lợi antenna phát BS: G_tx = 15.0 dBi
+    antenna_gain_rx_dbi: 15.0          # Độ lợi antenna thu BS: G_rx = 15.0 dBi
+    antenna_gain_tx_linear: 31.62      # G_tx tuyến tính = 10^(15/10) ≈ 31.62
+    antenna_gain_rx_linear: 31.62      # G_rx tuyến tính = 10^(15/10) ≈ 31.62
 
-  
+    # Tham số rò rỉ C2S
+    c2s_leakage_eta0: 1.0e-3           # eta_0: mức ghép nối tham chiếu khi cách nhau 0 PRB (-30 dB)
+    c2s_leakage_alpha: 1.0             # alpha: tốc độ suy giảm khi khoảng cách PRB tăng
+
+    # Tham số nhiễu inter-BS IBI 
+    ibi_coupling_eta: 1.0e-2           # eta_IBI: hệ số ghép nối công suất giữa các BS khác nhau
+
+
+  # 5. Tham số cấu hình chi tiết cho người dùng truyền thông (UE Parameters)
+
+ 
+  ue_parameters:
+    num_antennas: 1                    # Thiết bị UE đơn antenna 
+    antenna_gain_rx_dbi: 0.0           # Độ lợi antenna thu của UE: G_rx_ue = 0.0 dBi (Ăng-ten vô hướng)
+    antenna_gain_rx_linear: 1.0        # G_rx_ue dạng tuyến tính = 1.0
+    noise_figure_db: 7.0               # Hệ số tạp âm đầu thu UE: NF_ue = 7.0 dB
+    height_m: 1.5                      # Độ cao thiết bị UE: 1.5 m (cầm tay / gắn xe thấp)
+    min_distance_to_bs_m: 10.0         # Khoảng cách tối thiểu từ UE đến trạm BS (tránh suy biến d -> 0)
+    mobility_model: "quasi_static"     # Vị trí UE cố định trong 1 episode, random lại giữa các episode
+    traffic_model: "full_buffer"       # Mô hình lưu lượng: Luôn có gói tin chờ truyền (Full-buffer traffic)
+
+
+  # 6. Tham số SINR hệ thống (System SINR & Requirements)
+
+
+  sinr:
+    # SINR sensing tham chiếu Gamma_0 cho bộ lọc Kalman 
+    gamma_0_db: 10.0                   # Gamma_0 = 10.0 dB
+    gamma_0_linear: 10.0               # Gamma_0 dạng tuyến tính = 10.0
+
+    # Ngưỡng SINR truyền thông tối thiểu (dẫn xuất từ R_k^min = 1.0 Mbps trên 1 PRB)
+    gamma_c_min_db: 7.7                # gamma_c^min = 2^(1e6/360e3) - 1 ≈ 5.88 ≈ 7.7 dB
+    gamma_c_min_linear: 5.88           # gamma_c^min dạng tuyến tính
+
+    # Ngưỡng SINR sensing tối thiểu (dẫn xuất từ P_D^min = 0.90 với P_F = 1e-4)
+    gamma_s_min_db: 7.7                # gamma_s^min ≈ 5.95 ≈ 7.7 dB
+    gamma_s_min_linear: 5.95           # gamma_s^min dạng tuyến tính
+
+    # Điểm vận hành mong muốn (Operating target)
+    gamma_c_target_db: 15.0            # SINR comm mục tiêu (dB)
+    gamma_s_target_db: 10.0            # SINR sensing mục tiêu (dB)
+
+  # ----------------------------------------------------------------------------
+  # 7. Không gian kịch bản 3D (Simulation Scenario Geography)
+  # Định nghĩa tọa độ không gian 3 chiều cho BS, UE và Target
+  # ----------------------------------------------------------------------------
   scenario:
-    area_size_x_m: 1000.0              # Kích thước chiều X vùng mô phỏng (mét)
-    area_size_y_m: 1000.0              # Kích thước chiều Y vùng mô phỏng (mét)
-    area_size_z_m: 100.0               # Độ cao trần chiều Z vùng mô phỏng (mét)
-    bs_height_m: 25.0                  # Độ cao đặt trạm BS (mét)
-    ue_height_m: 1.5                   # Độ cao thiết bị UE (mét)
-    target_height_min_m: 10.0          # Độ cao bay/di chuyển tối thiểu của target (mét)
-    target_height_max_m: 60.0          # Độ cao tối đa của target (mét)
-    target_velocity_min_mps: 5.0       # Tốc độ di chuyển tối thiểu của target (m/s ~ 18 km/h)
-    target_velocity_max_mps: 25.0      # Tốc độ di chuyển tối đa của target (m/s ~ 90 km/h)
+    area_size_x_m: 1000.0              # Kích thước vùng mô phỏng trục X: 1000.0 m
+    area_size_y_m: 1000.0              # Kích thước vùng mô phỏng trục Y: 1000.0 m
+    area_size_z_m: 100.0               # Giới hạn độ cao trục Z: 100.0 m
+    bs_height_m: 25.0                  # Độ cao đặt antenna trạm BS: 25.0 m
+    ue_height_m: 1.5                   # Độ cao thiết bị người dùng UE: 1.5 m
+    target_height_min_m: 10.0          # Độ cao bay/di chuyển tối thiểu của target: 10.0 m
+    target_height_max_m: 60.0          # Độ cao bay/di chuyển tối đa của target: 60.0 m
+    target_velocity_min_mps: 5.0       # Vận tốc tối thiểu của target: 5.0 m/s (~18 km/h)
+    target_velocity_max_mps: 25.0      # Vận tốc tối đa của target: 25.0 m/s (~90 km/h)
 
+  # ----------------------------------------------------------------------------
+  # 8. Thời gian mô phỏng (Time Horizon)
+  # Tập khe thời gian T = {1, ..., T} 
+  # ----------------------------------------------------------------------------
   simulation:
-    num_slots_per_episode: 100         # Tập khe thời gian T = 100 slots mỗi episode (100 * 10ms = 1s)
+    num_slots_per_episode: 100         # T = 100 khe thời gian mỗi episode (100 * 10 ms = 1.0 s)
 
-
+  # ----------------------------------------------------------------------------
+  # 9. Ràng buộc chỉ tiêu hệ thống (Optimization Constraints)
+  # ----------------------------------------------------------------------------
   requirements:
-    min_ue_rate_mbps: 1.0              # R_k^{min}: Tốc độ truyền thông tối thiểu nếu UE được phục vụ
-    min_sensing_success_prob: 0.90     # P_m^{min}: Xác suất sensing thành công tối thiểu của mục tiêu
+    min_ue_rate_mbps: 1.0              # R_k^min = 1.0 Mbps
+    min_sensing_success_prob: 0.90     # P_m^min = 0.90 (90%)
+    min_detection_prob: 0.90           # P_D^min = 0.90
+    max_prob_false_alarm: 1.0e-4       # P_F = 1.0e-4
