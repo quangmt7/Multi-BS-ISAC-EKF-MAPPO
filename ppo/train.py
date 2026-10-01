@@ -787,6 +787,8 @@ class MAPPOTrainer:
                     buffer = self.buffer_factory()
                     episode_return = 0.0
                     final_info: dict[str, Any] = {}
+                    info_sums: dict[str, float] = {}
+                    info_counts: dict[str, int] = {}
                     steps_taken = 0
 
                     for step in range(episode_length):
@@ -807,6 +809,7 @@ class MAPPOTrainer:
                             env_truncated,
                             final_info,
                         ) = transition
+                        self._accumulate_float_info(final_info, info_sums, info_counts)
 
                         # Time-limit truncation still permits critic bootstrapping
                         # from next_global_state inside compute_gae().
@@ -848,6 +851,7 @@ class MAPPOTrainer:
                         "episode_return": float(episode_return),
                         "episode_length": steps_taken,
                         **self._serializable_info(final_info),
+                        **self._mean_float_info(info_sums, info_counts),
                         **numeric_metrics,
                     }
                     history.append(record)
@@ -1010,6 +1014,55 @@ class MAPPOTrainer:
             elif isinstance(value, (float, np.floating)) and np.isfinite(value):
                 scalars[str(key)] = float(value)
         return scalars
+
+    @staticmethod
+    def _accumulate_float_info(
+        info: Mapping[str, Any],
+        sums: dict[str, float],
+        counts: dict[str, int],
+    ) -> None:
+        """Accumulate finite floating-point environment metrics.
+
+        Argument:
+            (info) (Mapping[str, Any]): Diagnostics from one environment step.
+            (sums) (dict[str, float]): Running sum for each floating metric.
+            (counts) (dict[str, int]): Number of samples for each floating metric.
+
+        Return:
+            (None).
+
+        Note:
+            Boolean flags and integer counters remain final-step values. Floating
+            metrics such as rate, sensing probability, penalty and interference
+            are averaged over the episode.
+        """
+
+        for key, value in info.items():
+            if not isinstance(value, (float, np.floating)) or not np.isfinite(value):
+                continue
+            name = str(key)
+            sums[name] = sums.get(name, 0.0) + float(value)
+            counts[name] = counts.get(name, 0) + 1
+
+    @staticmethod
+    def _mean_float_info(
+        sums: Mapping[str, float], counts: Mapping[str, int]
+    ) -> dict[str, float]:
+        """Compute episode means for accumulated environment metrics.
+
+        Argument:
+            (sums) (Mapping[str, float]): Sum of each floating metric.
+            (counts) (Mapping[str, int]): Number of samples for each metric.
+
+        Return:
+            (means) (dict[str, float]): Per-episode mean metrics.
+        """
+
+        return {
+            name: total / counts[name]
+            for name, total in sums.items()
+            if counts.get(name, 0) > 0
+        }
 
 
 def parse_args() -> argparse.Namespace:
