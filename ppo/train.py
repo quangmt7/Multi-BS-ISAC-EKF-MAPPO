@@ -22,6 +22,9 @@ import yaml
 CONFIG_FILES = ("system.yaml", "ekf.yaml", "mappo.yaml")
 
 
+# =============================================================================
+# Đọc và kiểm tra cấu hình
+# =============================================================================
 def load_config(config_dir: str | Path) -> dict[str, Any]:
     """Load and merge the three project configuration files.
 
@@ -32,6 +35,8 @@ def load_config(config_dir: str | Path) -> dict[str, Any]:
     config_dir = Path(config_dir)
     merged: dict[str, Any] = {}
 
+    # Mỗi file quản lý một nhóm tham số riêng. Không cho phép hai file cùng
+    # định nghĩa một key cấp cao vì việc ghi đè âm thầm rất khó phát hiện.
     for filename in CONFIG_FILES:
         path = config_dir / filename
         if not path.is_file():
@@ -75,6 +80,8 @@ def validate_config(config: Mapping[str, Any]) -> None:
         if not isinstance(value, int) or value <= 0:
             raise ValueError(f"mappo_parameters.training.{name} must be a positive integer")
 
+    # Baseline nhóm đã thống nhất: Actor dùng PPO clipping, Critic dùng MSE.
+    # Hai tùy chọn dưới đây phải tắt để config không mô tả khác với agent.py.
     ppo = config["mappo_parameters"].get("ppo", {})
     if ppo.get("use_clipped_value_loss", False):
         raise ValueError(
@@ -98,6 +105,9 @@ def seed_everything(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
+# =============================================================================
+# Kiểm tra contract giữa environment, agent và rollout buffer
+# =============================================================================
 def infer_dimensions(
     local_observations: Any, global_state: Any, num_bs: int
 ) -> tuple[int, int]:
@@ -108,6 +118,8 @@ def infer_dimensions(
     State definition.
     """
 
+    # Local observation có một hàng cho mỗi BS. Global state là vector chung
+    # dành cho centralized critic trong quá trình huấn luyện.
     local_array = np.asarray(local_observations, dtype=np.float32)
     global_array = np.asarray(global_state, dtype=np.float32)
 
@@ -157,6 +169,8 @@ def _validate_step_result(
             f"received ({actual_local_dim}, {actual_global_dim})"
         )
 
+    # MAPPO hiện dùng một team reward chung cho toàn bộ BS, không nhận vector
+    # reward riêng cho từng agent.
     reward_array = np.asarray(reward)
     if reward_array.ndim != 0 or not np.isfinite(reward_array.item()):
         raise ValueError("env.step() must return one finite scalar team reward")
@@ -180,6 +194,8 @@ def _default_component_types() -> tuple[type[Any], type[Any]]:
     environment modules on other branches.
     """
 
+    # Import tại thời điểm chạy để vẫn có thể đọc config hoặc kiểm tra train.py
+    # khi agent.py và các nhánh còn lại chưa được merge vào nhánh hiện tại.
     try:
         from ppo.agent import MAPPOAgent, MultiAgentRolloutBuffer
     except (ImportError, ModuleNotFoundError) as exc:
@@ -204,6 +220,7 @@ def _validate_policy_output(
     actions_pwr = np.asarray(actions_pwr, dtype=np.float32)
     log_probs = np.asarray(log_probs, dtype=np.float32)
     value_array = np.asarray(value)
+    # Mỗi BS quyết định một đích đến và một mức công suất cho từng PRB.
     expected_action_shape = (num_bs, num_prb)
 
     if actions_prb.shape != expected_action_shape:
@@ -247,6 +264,8 @@ def create_environment(config: dict[str, Any]) -> Any:
 
 
 def _serializable_info(info: Mapping[str, Any]) -> dict[str, float | bool | int]:
+    # Chỉ ghi các scalar vào JSONL. Array chi tiết nên được evaluation module
+    # lưu riêng để tránh làm file log tăng kích thước quá nhanh.
     scalars: dict[str, float | bool | int] = {}
     for key, value in info.items():
         if isinstance(value, (bool, np.bool_)):
@@ -279,7 +298,11 @@ def save_checkpoint(
 
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    # Ghi ra file tạm rồi replace để không để lại checkpoint hỏng nếu quá trình
+    # lưu bị ngắt giữa chừng.
     temporary_path = path.with_suffix(path.suffix + ".tmp")
+    # Ngoài trọng số mạng và optimizer, lưu cả trạng thái bộ sinh số ngẫu nhiên
+    # để quá trình resume có thể tiếp tục từ đúng trạng thái đã dừng.
     payload = {
         "episode": int(episode),
         "global_step": int(global_step),
@@ -326,6 +349,9 @@ def train(
 ) -> list[dict[str, Any]]:
     """Run episodic on-policy MAPPO training and return episode metrics."""
 
+    # -------------------------------------------------------------------------
+    # 1. Chuẩn bị cấu hình, seed và suy ra kích thước state từ environment
+    # -------------------------------------------------------------------------
     validate_config(config)
     system = config["system_parameters"]
     training = config["mappo_parameters"]["training"]
@@ -338,11 +364,15 @@ def train(
 
     seed_everything(seed)
     env = env if env is not None else create_environment(config)
+    # Không hard-code local_obs_dim/global_state_dim trong train.py vì cấu trúc
+    # State vẫn có thể được nhóm điều chỉnh. Environment là nguồn thông tin chuẩn.
     initial_local_obs, initial_global_state = _reset_environment(env, seed)
     local_obs_dim, global_state_dim = infer_dimensions(
         initial_local_obs, initial_global_state, num_bs
     )
 
+    # Cho phép truyền fake environment/agent khi smoke test; khi train thật,
+    # train.py tự lấy MAPPOAgent và MultiAgentRolloutBuffer của project.
     if agent is None or buffer_factory is None:
         agent_type, buffer_type = _default_component_types()
         if agent is None:
@@ -355,6 +385,9 @@ def train(
     metrics_path = output_dir / "metrics.jsonl"
     checkpoint_dir = output_dir / "checkpoints"
 
+    # -------------------------------------------------------------------------
+    # 2. Khôi phục checkpoint nếu người dùng tiếp tục một lần train trước
+    # -------------------------------------------------------------------------
     start_episode = 0
     global_step = 0
     if resume_from is not None:
@@ -363,6 +396,9 @@ def train(
     history: list[dict[str, Any]] = []
     file_mode = "a" if start_episode > 0 else "w"
     with metrics_path.open(file_mode, encoding="utf-8") as metrics_file:
+        # ---------------------------------------------------------------------
+        # 3. Vòng lặp episode và thu thập rollout on-policy
+        # ---------------------------------------------------------------------
         for episode in range(start_episode, total_episodes):
             local_obs, global_state = _reset_environment(env, seed + episode)
             infer_dimensions(local_obs, global_state, num_bs)
@@ -372,6 +408,8 @@ def train(
             steps_taken = 0
 
             for step in range(episode_length):
+                # Actor dùng local observation của từng BS; centralized critic
+                # dùng global state chung và trả về một state value.
                 policy_output = agent.select_action(local_obs, global_state)
                 actions_prb, actions_pwr, log_probs, value = _validate_policy_output(
                     *policy_output,
@@ -393,8 +431,13 @@ def train(
                     final_info,
                 ) = transition
 
+                # terminated: kết thúc thật của bài toán (ví dụ mất target).
+                # truncated: dừng do giới hạn số slot; critic vẫn được bootstrap
+                # từ next global state trong agent.compute_gae().
                 reached_time_limit = step + 1 >= episode_length
                 truncated = bool(env_truncated or reached_time_limit)
+                # Buffer lưu state trước action cùng reward và cờ kết thúc của
+                # transition vừa thực hiện.
                 buffer.push(
                     local_obs,
                     global_state,
@@ -419,6 +462,9 @@ def train(
             if len(buffer) == 0:
                 raise RuntimeError("No transitions were collected for the episode")
 
+            # -----------------------------------------------------------------
+            # 4. Cập nhật Actor/Critic sau khi hoàn thành rollout của episode
+            # -----------------------------------------------------------------
             update_metrics = agent.update(buffer, global_state)
             if not isinstance(update_metrics, Mapping):
                 raise ValueError("agent.update() must return a metrics mapping")
@@ -427,6 +473,9 @@ def train(
             }
             if not all(np.isfinite(value) for value in numeric_update_metrics.values()):
                 raise FloatingPointError("agent.update() returned NaN or Inf metrics")
+            # -----------------------------------------------------------------
+            # 5. Ghi metric dạng JSON Lines và lưu checkpoint định kỳ
+            # -----------------------------------------------------------------
             record: dict[str, Any] = {
                 "episode": episode + 1,
                 "global_step": global_step,
@@ -458,6 +507,7 @@ def train(
 
 
 def parse_args() -> argparse.Namespace:
+    # Chạy từ thư mục gốc bằng: python -m ppo.train
     parser = argparse.ArgumentParser(description="Train the multi-BS ISAC MAPPO agent")
     project_root = Path(__file__).resolve().parents[1]
     parser.add_argument("--config-dir", type=Path, default=project_root / "config")
