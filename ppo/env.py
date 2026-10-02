@@ -1,10 +1,10 @@
 import numpy as np
-from isac.scenario.scenario import Scenario
-from isac.channel.channel import WirelessChannel
-from isac.communication.communication import CommunicationManager
-from isac.sensing.detection import Detection
-from isac.sensing.measurement import Measurement
-from isac.sensing.ekf import EKF  
+from scenario.scenario import Scenario
+from channel.channel import WirelessChannel
+from communication.communication import CommunicationManager
+from sensing.detection import Detection
+from sensing.bs_measurement import Measurement
+from sensing.ekf import EKF  
 
 class MultiISACEnv:
     
@@ -12,42 +12,47 @@ class MultiISACEnv:
         self.config = config
 
         # get system parameter
-        sys_cfg = config.get("system_parameters", config)
-        sim_cfg = sys_cfg.get("simulation", {})
-        req_cfg = sys_cfg.get("requirements", {})
+        sys_config = config["system_parameters"]
+        sim_config = sys_config["simulation"]
+        req_config = sys_config["requirements"]
 
-        self.num_bs = sys_cfg["num_bs"]
-        self.num_ues = sys_cfg["num_ue"]
-        self.num_targets = sys_cfg["num_target"]
-        self.n_prb = sys_cfg["num_prb"]
+        self.num_bs = sys_config["num_bs"]
+        self.num_ues = sys_config["num_ue"]
+        self.num_targets = sys_config["num_target"]
+        self.n_prb = sys_config["num_prb"]
 
-        # Thời lượng khe thời gian Delta t (s) và số slot mỗi episode T
-        self.slot_duration = sys_cfg["slot_duration_ms"] / 1000.0  # 10.0 ms = 0.01 s
-        self.max_steps = sim_cfg.get("num_slots_per_episode", 100)
-
-        # Công suất phát cực đại: chuyển từ dBm sang Watt (33 dBm ~ 2.0 W)
-        tx_dbm = sys_cfg.get("max_tx_power_dbm", 33.0)
+        self.slot_duration = sys_config["slot_duration_ms"] / 1000.0  # 10.0 ms = 0.01 s
+        self.max_steps = sim_config.get("num_slots_per_episode", 100)
+        
+        tx_dbm = sys_config["max_tx_power_dbm"]
         self.p_max = float(10.0 ** ((tx_dbm - 30.0) / 10.0))
-        self.r_min = req_cfg.get("min_ue_rate_mbps", 1.0)
+        self.r_min = req_config["min_ue_rate_mbps"]
 
         # get mappo config
-        mappo_cfg = config.get("mappo_parameters", config)
-        reward_cfg = mappo_cfg.get("reward_weights", {})
-        norm_cfg = mappo_cfg.get("normalization", {})
+        mappo_cfg = config["mappo_parameters"]
+        reward_cfg = mappo_cfg["reward_weights"]
+        norm_cfg = mappo_cfg["normalization"]
+        penalty_cfg = mappo_cfg["penalties"]
+       
+        
+        self.alpha = float(reward_cfg["alpha_aoi"])                   
+        self.beta = float(reward_cfg["beta_uncertainty"])              
+        self.gamma = float(reward_cfg["gamma_power"])                 
+      
+        self.a_max = float(norm_cfg["a_max"])                         
+        self.u_pos_max = float(norm_cfg["u_pos_max"])                  
+        self.u_vel_max = float(norm_cfg["u_vel_max"])              
+         
+        self.c1 = float(penalty_cfg["penalty_rate_qos"])              
+        self.c2 = float(penalty_cfg["penalty_sensing_reliability"])   
+        self.c3 = float(penalty_cfg["penalty_uncertainty"])
+        self.c4 = float(penalty_cfg["penalty_uncertainty"])           
 
-        self.alpha = reward_cfg.get("alpha_aoi", 0.4)
-        self.beta = reward_cfg.get("beta_uncertainty", 0.4)
-        self.gamma = reward_cfg.get("gamma_power", 0.2)
-
-        self.a_max = norm_cfg.get("a_max", 20.0)
-        self.u_pos_max = norm_cfg.get("u_pos_max", 20.0)
-        self.u_vel_max = norm_cfg.get("u_vel_max", 10.0)
-
-        # Biến theo dõi trong từng episode
+      
         self.current_step: int = 0
         self.aoi: np.ndarray = np.zeros(self.num_targets, dtype=np.float32)
 
-        # Khởi tạo các module con (submodules)
+        # submodules
         self.scenario = Scenario(self.config)
         self.channel = WirelessChannel(self.config)
         self.comm = CommunicationManager(self.config)
@@ -152,7 +157,7 @@ class MultiISACEnv:
             "qos_penalty": float(comm_penalty),
             "lost_target": lost_target,
         }
-     return next_local_obs, next_global_state, reward, terminated, truncated, info
+    return next_local_obs, next_global_state, reward, terminated, truncated, info
 
     def _get_local_observations(self):
          true

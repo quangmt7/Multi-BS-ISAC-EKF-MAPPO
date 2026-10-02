@@ -9,13 +9,10 @@ class CommunicationManager:
             (config) (dict): Configuration dictionary containing system parameters and requirements.
         Return:
             None
-        Note:
-            Converts PRB bandwidth from kHz to Hz and minimum rate from Mbps to bps.
-            Computes thermal noise floor power per PRB in Watts.
         """
         self.config = config or {}
         sys_config = config.get("system_parameters", config)
-        req_config = sys_config.get("requirements") 
+        req_config = sys_config["requirements"] 
 
         self.num_bs = sys_config["num_bs"]
         self.num_ues = sys_config["num_ue"]
@@ -25,12 +22,11 @@ class CommunicationManager:
         self.B_prb = sys_config["prb_bandwidth_khz"] * 1e3
         self.R_min = req_config["min_ue_rate_mbps"] * 1e6
 
-        noise_psd = sys_config["noise_psd_dbm_hz"]
-        noise_fig = sys_config["noise_figure_db"]
-        noise_dbm = noise_psd + 10.0 * np.log10(self.B_prb) + noise_fig
-        self.noise_power_ue = float(10.0 ** ((noise_dbm - 30.0) / 10.0))
+        self.noise_psd = float(sys_config["noise_psd_dbm_hz"])
+        self.noise_fig = float(sys_config["noise_figure_db"])
+        self.noise_power_ue = float(sys_config["noise_power_per_prb_watt"])
 
-    def compute_sinr(self, X_c, P_c, channel_gains, inter_bs_interf=None):
+    def compute_sinr(self, X_c, P_c, comm_gain, inter_bs_interf=None):
         """
         Compute Communication SINR and Shannon spectral efficiency per PRB 
         Argument:
@@ -47,7 +43,7 @@ class CommunicationManager:
         """
         if inter_bs_interf is None:
             inter_bs_interf = 0.0
-        signal_pow = P_c * channel_gains
+        signal_pow = P_c * comm_gain
         denomiator = inter_bs_interf + self.noise_power_ue
         comm_sinr = np.where((X_c == 1) & (P_c > 0), signal_pow / np.maximum(denomiator, 1e-16), 0.0).astype(np.float32)
         spectral_eff = np.log2(1.0 + np.maximum(comm_sinr, 0.0)).astype(np.float32)
