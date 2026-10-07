@@ -2,14 +2,16 @@ import numpy as np
 
 
 class CommunicationManager:
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, bs_id: int):
         """
         Initialize network system parameters and QoS requirements.
         Argument:
             (config) (dict): Configuration dictionary containing system parameters and requirements.
+            bs_id: (int) :  Base Station index (0 to num_bs - 1).
         Return:
             None
         """
+        self.bs_id = bs_id
         self.config = config or {}
         sys_config = config.get("system_parameters", config)
         req_config = sys_config["requirements"] 
@@ -44,8 +46,8 @@ class CommunicationManager:
         if inter_bs_interf is None:
             inter_bs_interf = 0.0
         signal_pow = P_c * comm_gain
-        denomiator = inter_bs_interf + self.noise_power_ue
-        comm_sinr = np.where((X_c == 1) & (P_c > 0), signal_pow / np.maximum(denomiator, 1e-16), 0.0).astype(np.float32)
+        denominator = inter_bs_interf + self.noise_power_ue
+        comm_sinr = np.where((X_c == 1) & (P_c > 0), signal_pow / np.maximum(denominator, 1e-16), 0.0).astype(np.float32)
         spectral_eff = np.log2(1.0 + np.maximum(comm_sinr, 0.0)).astype(np.float32)
         return comm_sinr, spectral_eff
 
@@ -58,8 +60,13 @@ class CommunicationManager:
         Return:
             (user_rates) (numpy.ndarray)[K]: Achievable data rate for each UE
         """
-        rate_per_prb = X_c * self.B_prb * spectral_eff  # 3d tensor: (B, K, R)
-        user_rates = np.sum(rate_per_prb, axis=(0, 2)).astype(np.float32)
+        rate_per_prb = X_c * self.B_prb * spectral_eff  # (K, R) hoặc (B, K, R)
+        if rate_per_prb.ndim == 2:
+             # Single BS: sum over PRB axis (axis=1) -> returns shape (K,)
+            user_rates = np.sum(rate_per_prb, axis=1).astype(np.float32)
+        else:
+            # Network-wide: sum over BS and PRB axes (axis=(0, 2)) -> returns shape (K,)
+            user_rates = np.sum(rate_per_prb, axis=(0, 2)).astype(np.float32)
         return user_rates
 
     def evaluate_qos(self, user_rates, X_c, flag=None):
@@ -75,7 +82,11 @@ class CommunicationManager:
             (metrics) (dict): Summary dictionary containing penalty, satisfaction rate, sum rate, and rates in Mbps.
         """
         if flag is None:
-            flag = (np.sum(X_c, axis=(0, 2)) > 0).astype(np.float32)
+            if X_c is not None:
+                axis_sum = 1 if X_c.ndim == 2 else (0, 2)
+                flag = (np.sum(X_c, axis=axis_sum) > 0).astype(np.float32)
+            else:
+                flag = (user_rates > 0).astype(np.float32)
 
         require_rate = self.R_min * flag
         rate_gap = np.maximum(0.0, require_rate - user_rates)  # bps
