@@ -356,7 +356,7 @@ class MultiISACEnv:
         - N~_b^res:       [1] Idle PRB ratio of BS b
         - progress:       [3] Time progress features (t / T, sin, cos)
         
-        Total dimension per BS: 7*M + K + 8.
+        Total dimension per BS: 8*M + K + 8.
         
         Returns:
             local_obs_list (np.ndarray): Shape [B, local_obs_dim]
