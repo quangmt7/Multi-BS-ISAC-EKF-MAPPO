@@ -35,7 +35,7 @@ munication và sensing.
   - benchmark.py: Chạy và so sánh các baseline/benchmark độc lập với environment và training code.
 
 + results/
- - Thư mục output: Lưu checkpoint, log, metric, figure và kết quả cuối cùng. Không chứa logic simulation.
+   - Thư mục output: Lưu checkpoint, log, metric, figure và kết quả cuối cùng. Không chứa logic simulation.
 
 + main/
   - main.py: Điểm chạy chính: load config → tạo scenario → tạo environment → tạo MAPPO → chạy episode/timestep → lưu kết quả.
