@@ -13,7 +13,7 @@ munication và sensing.
 
 + scenario/
 
- - scenario.py: Tạo thế giới mô phỏng: vị trí BS/UE/target, trạng thái ban đầu của target và các thành phần tĩnh của scenario.
+  - scenario.py: Tạo thế giới mô phỏng: vị trí BS/UE/target, trạng thái ban đầu của target và các thành phần tĩnh của scenario.
 
 + ppo/
   
