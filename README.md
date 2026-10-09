@@ -20,7 +20,7 @@ munication và sensing.
   -agent.py: Toàn bộ về agent: định nghĩa mô hình, cập nhật chính sách, đưa ra hành động từ state
   -env.py: Bộ điều phối một timestep: nhận action từ MAPPO, gọi channel/sensing/communication, chạy EKF, cập nhật state/AoI, tính reward và tạo observation tiếp theo.
 
-+Channel/
++ Channel/
  - channel.py: Tính/duy trì channel giữa BS–UE và các đại lượng cần cho sensing. Cung cấp SINR và spectral efficiency C_{b,k,r}=log2(1+SINR) cho communication.
 + sensing/
 - detection.py: Tính xác suất detection P^D_{b,m} và xác định measurement nào của BS được sử dụng.
@@ -35,7 +35,7 @@ munication và sensing.
   - benchmark.py: Chạy và so sánh các baseline/benchmark độc lập với environment và training code.
 
 + results/
-   - Thư mục output: Lưu checkpoint, log, metric, figure và kết quả cuối cùng. Không chứa logic simulation.
+  - Thư mục output: Lưu checkpoint, log, metric, figure và kết quả cuối cùng. Không chứa logic simulation.
 
 + main/
   - main.py: Điểm chạy chính: load config → tạo scenario → tạo environment → tạo MAPPO → chạy episode/timestep → lưu kết quả.
