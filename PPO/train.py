@@ -5,14 +5,14 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-# Preserve direct invocation with ``python ppo/train.py``.
+# Preserve direct invocation with ``python PPO/train.py``.
 if __package__ in (None, ""):
     import sys
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from ppo.utils.mappo_trainer import MAPPOTrainer
-from ppo.utils.project_config import ProjectConfig
+from PPO.utils.mappo_trainer import MAPPOTrainer
+from PPO.utils.project_config import ProjectConfig
 
 
 def parse_args() -> argparse.Namespace:

@@ -10,9 +10,9 @@ from typing import Any, Callable, Mapping
 import numpy as np
 import torch
 
-from ppo.utils.checkpoint_manager import CheckpointManager
-from ppo.utils.project_config import ProjectConfig
-from ppo.utils.runtime_contract import RuntimeContract
+from PPO.utils.checkpoint_manager import CheckpointManager
+from PPO.utils.project_config import ProjectConfig
+from PPO.utils.runtime_contract import RuntimeContract
 
 
 class MAPPOTrainer:
@@ -226,10 +226,10 @@ class MAPPOTrainer:
         """
 
         try:
-            from ppo.env import MultiISACEnv
+            from PPO.env import MultiISACEnv
         except (ImportError, ModuleNotFoundError, SyntaxError) as exc:
             raise RuntimeError(
-                "ppo.env or one of its physical-model dependencies is not ready. "
+                "PPO.env or one of its physical-model dependencies is not ready. "
                 "Integrate scenario, channel, sensing and communication before "
                 "starting real training."
             ) from exc
@@ -251,10 +251,10 @@ class MAPPOTrainer:
         if self.agent is not None and self.buffer_factory is not None:
             return
         try:
-            from ppo.agent import MAPPOAgent, MultiAgentRolloutBuffer
+            from PPO.agent import MAPPOAgent, MultiAgentRolloutBuffer
         except (ImportError, ModuleNotFoundError) as exc:
             raise RuntimeError(
-                "ppo.agent is unavailable on this branch. Merge the reviewed "
+                "PPO.agent is unavailable on this branch. Merge the reviewed "
                 "agent implementation before starting real training."
             ) from exc
 

@@ -23,7 +23,7 @@ class ProjectConfig:
         the same top-level section.
     """
 
-    FILE_NAMES = ("system.yaml", "ekf.yaml", "mappo.yaml")
+    FILE_NAMES = ("system.yaml", "efk.yaml", "mappo.yaml")
 
     def __init__(self, data: Mapping[str, Any]):
         """Store a configuration mapping.
