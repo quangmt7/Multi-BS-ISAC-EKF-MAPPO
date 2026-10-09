@@ -1,0 +1,115 @@
+mappo_parameters:
+  # 1. Hyperparameters thuật toán MAPPO / PPO
+  ppo:
+    lr_actor: 1.0e-4                   # Tốc độ học mạng Actor 
+    lr_critic: 3.0e-4                  # Tốc độ học mạng Critic 
+    gamma: 0.99                        # Hệ số chiết khấu phần thưởng (Discount factor gamma = 0.99)
+    gae_lambda: 0.95                   # Hệ số GAE lambda = 0.95
+    clip_epsilon: 0.2                  # Biên độ PPO clipping epsilon = 0.2
+    ppo_epochs: 10                     # Số epoch tối ưu hóa trên buffer mỗi lần cập nhật
+    num_mini_batch: 4                  # Số mini-batch phân tách từ buffer (100 / 4 = 25)
+    batch_size: 25                     # Kích thước mỗi mini-batch huấn luyện (100 slots / 4 = 25)
+    entropy_coef: 0.01                 # Trọng số khuyến khích khám phá (Entropy bonus coefficient)
+    value_loss_coef: 0.5               # Trọng số hàm mất mát của Critic (Value loss coefficient)
+    max_grad_norm: 0.5                 # Ngưỡng cắt gradient chống bùng nổ (Gradient clipping)
+    use_clipped_value_loss: true       # Sử dụng clipped value loss để huấn luyện Critic ổn định
+    use_huber_loss: false              # FALSE: Sử dụng MSE loss (Mean Squared Error) cho Critic theo yêu cầu
+    huber_delta: 10.0                  # (Không sử dụng khi use_huber_loss: false)
+    use_linear_lr_decay: false         # Giảm dần tốc độ học tuyến tính theo tiến độ training
+
+  # ----------------------------------------------------------------------------
+  # 2. Không gian hành động lai (Hybrid Action Space)
+
+  action_space:
+    num_discrete_choices: 31           # 1 (idle) + 15 (targets) + 15 (UEs) = 31 lựa chọn (M=15, K=15)
+    power_action_type: "continuous"    # Công suất liên tục (Squashed Gaussian / Beta distribution)
+    power_min_watt: 0.0                # Công suất phát tối thiểu trên mỗi PRB (W)
+
+  # ----------------------------------------------------------------------------
+  # 3. Kiến trúc mạng nơ-ron (Actor & Critic Networks)
+  # ----------------------------------------------------------------------------
+  network:
+    actor:
+    
+      hidden_dims: [256, 256]          # Kích thước các lớp ẩn của Actor
+      activation: "tanh"               # Hàm kích hoạt tanh theo yêu cầu
+      use_layer_norm: true             # Chuẩn hóa Layer Normalization
+      orthogonal_init: true            # Khởi tạo trọng số trực giao (Orthogonal Initialization)
+      gain: 0.01                       # Hệ số gain lớp output của Actor
+
+    critic:
+  
+      input_dim_concatenated_obs: 290  # Tùy chọn dự phòng: ghép quan sát 5 BS * 58 chiều cục bộ = 290
+      hidden_dims: [256, 128]          # 2 lớp ẩn: 100 -> 256 -> 128 -> 1 (tối ưu cho activation tanh)
+      activation: "tanh"               # Hàm kích hoạt tanh theo yêu cầu
+      use_layer_norm: true             # Chuẩn hóa Layer Normalization
+      orthogonal_init: true            # Khởi tạo trọng số trực giao
+      gain: 1.0                        # Hệ số gain lớp output của Critic
+
+  # ----------------------------------------------------------------------------
+  # 4. Trọng số hàm mục tiêu tối ưu (Objective Weights)
+  #   R_obj = - alpha * (A_bar / A_max) - beta * (U_pos / U_pos_max + U_vel / U_vel_max) - gamma * (P_used / P_max)
+  #   với alpha, beta, gamma >= 0 và alpha + beta + gamma = 1.0 
+  # ----------------------------------------------------------------------------
+  reward_weights:
+    alpha_aoi: 0.4                     # alpha = 0.4: Trọng số của Age of Information (AoI)
+    beta_uncertainty: 0.4              # beta = 0.4: Trọng số của độ bất định ước lượng EKF (pos + vel)
+    gamma_power: 0.2                   # gamma = 0.2: Trọng số của công suất phát tiêu thụ
+    # Tổng: 0.4 + 0.4 + 0.2 = 1.0
+
+  # ----------------------------------------------------------------------------
+  # 5. Các giá trị chuẩn hóa (Normalization Constants)
+  # Đảm bảo từng thành phần trong hàm mục tiêu và State nằm trong khoảng [0, 1]
+  # ----------------------------------------------------------------------------
+  normalization:
+    a_max: 20.0                        # A_max: Ngưỡng chuẩn hóa cực đại AoI (khe thời gian)
+    u_pos_max: 20.0                    # U^{pos}_{max}: Ngưỡng chuẩn hóa bất định vị trí 
+    u_vel_max: 10.0                    # U^{vel}_{max}: Ngưỡng chuẩn hóa bất định vận tốc 
+    p_max_watt: 2.0                    # P_max: Công suất chuẩn hóa = 2.0 W
+
+
+  # ----------------------------------------------------------------------------
+  # 6. Mức phạt vi phạm ràng buộc theo hàm tuyến tính phân đoạn Hinge Loss:
+  #   R_penalty = c1 * sum_k max(0, R_min - R_k)/R_min
+  #             + c2 * sum_m max(0, P_min - P_suc)/P_min
+  #             + c3 * sum_m max(0, U_pos - U_pos_max)/U_pos_max
+  #             + c4 * sum_m max(0, U_vel - U_vel_max)/U_vel_max
+  # ----------------------------------------------------------------------------
+  penalties:
+    c1_rate_qos: 0.2                   # c1 = 0.2: Phạt khi tốc độ UE không đạt: R_k < R_k^min
+    c2_sensing_reliability: 0.2        # c2 = 0.2: Phạt khi xác suất sensing không đạt: P_m^suc < P_m^min
+    c3_pos_uncertainty: 0.1            # c3 = 0.1: Phạt khi bất định vị trí EKF vượt ngưỡng: U_pos > U_pos_max
+    c4_vel_uncertainty: 0.1            # c4 = 0.1: Phạt khi bất định vận tốc EKF vượt ngưỡng: U_vel > U_vel_max
+    penalty_rate_qos: 0.2              # Alias tương thích ngược
+    penalty_sensing_reliability: 0.2   # Alias tương thích ngược
+    penalty_uncertainty: 0.1           # Alias tương thích ngược
+    penalty_power_budget: 0.5          # Phạt khi tổng công suất BS vượt P_b^max (ràng buộc vật lý)
+
+  # ----------------------------------------------------------------------------
+  # 7. Ràng buộc chỉ tiêu QoS (QoS Thresholds)
+
+  # ----------------------------------------------------------------------------
+  qos_constraints:
+    r_min_ue_mbps: 1.0                 # R_k^min = 1.0 Mbps (Tốc độ truyền thông tối thiểu nếu được phục vụ)
+    min_sensing_success_prob: 0.90     # P_m^min = 0.90 (Xác suất sensing thành công tối thiểu)
+
+  # ----------------------------------------------------------------------------
+  # 8. Mô hình nhiễu C2S và IBI (Interference Parameters)
+  # ----------------------------------------------------------------------------
+  interference:
+    c2s_leakage_eta0: 1.0e-3           # eta_0 = 10^-3 (-30 dB): Mức rò rỉ C2S tham chiếu
+    c2s_leakage_alpha: 1.0             # alpha = 1.0: Hệ số suy giảm leakage theo khoảng cách PRB
+    ibi_coupling_eta: 1.0e-2           # eta_IBI = 10^-2 (-20 dB): Hệ số ghép nối nhiễu liên trạm BS
+
+  # ----------------------------------------------------------------------------
+  # 9. Quản lý quá trình huấn luyện (Training & Rollout Management)
+  # ----------------------------------------------------------------------------
+  training:
+    total_episodes: 1000               # Tổng số episode huấn luyện
+    episode_length: 100                # T = 100 khe thời gian mỗi episode 
+    rollout_threads: 1                 # Số môi trường song song (nếu dùng vector env)
+    save_interval: 50                  # Lưu checkpoint sau mỗi 50 episode
+    eval_interval: 20                  # Đánh giá sau mỗi 20 episode
+    log_interval: 10                   # Ghi log kết quả sau mỗi 10 episode
+    device: "cpu"                      # Thiết bị huấn luyện ("cuda" hoặc "cpu")
+    seed: 42                           # Random seed cố định để tái lập kết quả
