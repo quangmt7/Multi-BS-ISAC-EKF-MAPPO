@@ -22,10 +22,11 @@ munication và sensing.
 
 + Channel/
  - channel.py: Tính/duy trì channel giữa BS–UE và các đại lượng cần cho sensing. Cung cấp SINR và spectral efficiency C_{b,k,r}=log2(1+SINR) cho communication.
+
 + sensing/
-- detection.py: Tính xác suất detection P^D_{b,m} và xác định measurement nào của BS được sử dụng.
-- measurement.py: Tạo measurement range/angle y_{b,m}=[r_{b,m}, theta_{b,m}]^T và measurement covariance R_{b,m}. Góc dùng atan2.
-- efk.py: Thực hiện prediction và update. Nếu nhiều BS có measurement, fusion/batch update vào một common target state/covariance. Nếu không có measurement, chỉ prediction.
+  - detection.py: Tính xác suất detection P^D_{b,m} và xác định measurement nào của BS được sử dụng.
+  - measurement.py: Tạo measurement range/angle y_{b,m}=[r_{b,m}, theta_{b,m}]^T và measurement covariance R_{b,m}. Góc dùng atan2.
+  - efk.py: Thực hiện prediction và update. Nếu nhiều BS có measurement, fusion/batch update vào một common target state/covariance. Nếu không có measurement, chỉ prediction.
 
 + Communication/
   - communication.py: Tính SINR/rate/throughput của UE từ assignment, power và channel; kiểm tra communication QoS nếu cần.
