@@ -1,0 +1,115 @@
+system_parameters:
+
+  # ----------------------------------------------------------------------------
+  # 1. Quy mô hệ thống (Network Entities & Sets)
+  # ----------------------------------------------------------------------------
+  num_bs: 5                            # B = 5 trạm BS
+  num_ue: 15                            # K = 15 người dùng truyền thông (UEs)
+  num_target: 15                        # M = 15 mục tiêu di động cần theo dõi (Targets)
+  num_prb: 300                         # N_PRB = 300 khối tài nguyên vật lý (PRBs)
+
+  # ----------------------------------------------------------------------------
+  # 2. Cấu hình vô tuyến và OFDM 5G NR (Radio Resources & Numerology)
+  # Băng tần 5G NR FR1 (Sub-6 GHz, ví dụ băng n78 3.5 GHz)
+  # SCS = 30 kHz (Numerology mu = 1), 1 PRB = 12 subcarriers * 30 kHz = 360 kHz
+  # ----------------------------------------------------------------------------
+  bandwidth_mhz: 100.0                 # Tổng băng thông hệ thống: 100.0 MHz
+  carrier_frequency_ghz: 3.5           # Tần số sóng mang trung tâm f_c = 3.5 GHz
+  subcarrier_spacing_khz: 30.0         # Khoảng cách sóng mang con (SCS) = 30.0 kHz
+  prb_bandwidth_khz: 360.0             # Băng thông 1 PRB: B_0 = B_PRB = 360.0 kHz
+  slot_duration_ms: 10.0               # Thời lượng 1 khe thời gian: Delta t = 10.0 ms = 0.01 s
+  max_tx_power_dbm: 33.0               # Công suất phát tối đa mỗi BS: P_max = 33.0 dBm
+  max_tx_power_watt: 2.0               # P_b^{max} dạng tuyến tính = 2.0 Watt (tương ứng 33 dBm)
+
+  # ----------------------------------------------------------------------------
+  # 3. Tạp âm nhiệt và đặc tính máy thu (Thermal Noise: B_0 * N_0)
+  #   - Phía máy thu truyền thông (UE k): sigma_{c,0}^2 = B_0 * N_0
+  #   - Phía máy thu cảm biến radar (BS b): sigma_{s,0}^2 = B_0 * N_0
+  # ----------------------------------------------------------------------------
+  noise_psd_dbm_hz: -174.0             # Mật độ phổ tạp âm nhiệt: N_0 = -174.0 dBm/Hz
+  noise_figure_db: 7.0                 # Hệ số tạp âm máy thu: NF = 7.0 dB
+  noise_power_per_prb_dbm: -111.4      # Tạp âm trên 1 PRB: sigma^2 = -174 + 7 + 10*log10(360k) = -111.4 dBm
+  noise_power_per_prb_watt: 7.24e-15   # sigma^2 trên 1 PRB dạng tuyến tính (Watt) = B_0 * N_0
+
+  # ----------------------------------------------------------------------------
+  # 4. Kênh truyền, Beamforming và Can nhiễu
+  
+  channel_and_interference:
+    # --- Mô hình suy hao 3GPP & Radar ---
+    pathloss_model: "3gpp_macro"       # Mô hình suy hao đường truyền 3GPP chuẩn
+    pathloss_const_db: 128.1           # Hằng số suy hao đường truyền (dB)
+    pathloss_exponent_comm: 37.6       # Hệ số suy hao: 37.6 * log10(d_km) (tương ứng alpha_c = 3.76)
+    pathloss_exponent_sensing: 2.0     # Số mũ suy hao 1 chiều radar: alpha_s = 2.0 (suy hao 2 chiều ~ d^4)
+    shadowing_std_db: 6.0              # sigma_SF: Độ lệch chuẩn suy hao che khuất Log-normal (dB)
+    target_rcs_sqm: 1.0                # Diện tích phản xạ hiệu dụng radar (RCS): sigma_rcs = 1.0 m^2
+
+    # --- Đặc tính Anten & Beamforming ---
+    num_antennas_bs: 64                # N_b = 64 phần tử antenna tại mỗi trạm BS
+    antenna_element_gain_dbi: 0.0      # G_ant: Độ lợi của 1 phần tử antenna đơn lẻ = 0 dBi (đẳng hướng)
+    antenna_element_gain_linear: 1.0   # G_ant tuyến tính = 10^(0/10) = 1.0 
+    antenna_gain_tx_dbi: 5        # G_b (hoặc G_max): Độ lợi antenna phát cực đại của mảng BS (dBi) 
+    antenna_gain_rx_dbi: 5          # G_rx: Độ lợi antenna thu cực đại của BS (dBi)
+    antenna_gain_tx_linear: 3.162      # G_tx (G_b/G_max) tuyến tính = 10^(5/10) 
+    antenna_gain_rx_linear: 3.162      # G_rx tuyến tính = 10^(5/10) 
+    beam_pattern_q: 2.0                # q > 0: Tham số điều khiển độ suy giảm búp sóng khi lệch hướng 
+
+    # --- Can nhiễu C2S và IBI ---
+    c2s_leakage_eta0: 1.0e-3           # eta_0: Mức rò rỉ C2S tham chiếu (-30 dB)
+    c2s_leakage_alpha: 1.0             # alpha: Hệ số suy giảm leakage theo khoảng cách PRB
+    ibi_coupling_eta: 1.0e-2           # eta_IBI: Hệ số ghép nối công suất nhiễu liên trạm BS 
+
+  # ----------------------------------------------------------------------------
+  # 5. Tham số cấu hình chi tiết cho người dùng truyền thông (UE Parameters)
+  # ----------------------------------------------------------------------------
+  ue_parameters:
+    num_antennas: 1                    # Thiết bị UE đơn antenna (Single-antenna UE)
+    antenna_gain_rx_dbi: 0.0           # G_rx_ue = 0.0 dBi (Ăng-ten vô hướng)
+    antenna_gain_rx_linear: 1.0        # G_rx_ue dạng tuyến tính = 1.0
+    noise_figure_db: 7.0               # Hệ số tạp âm đầu thu UE: NF_ue = 7.0 dB
+    height_m: 1.5                      # Độ cao thiết bị UE: 1.5 m
+    min_distance_to_bs_m: 10.0         # Khoảng cách tối thiểu từ UE đến trạm BS (tránh chia 0)
+    mobility_model: "quasi_static"     # Vị trí UE cố định trong 1 episode
+    traffic_model: "full_buffer"       # Mô hình lưu lượng: Full-buffer (luôn có data cần tải)
+
+  # ----------------------------------------------------------------------------
+  # 6. Tham số SINR hệ thống (System SINR)
+  # Phục vụ tính toán và kiểm tra các ràng buộc 
+  # ----------------------------------------------------------------------------
+  sinr:
+    gamma_0_db: 10.0                   # Gamma_0 = 10.0 dB (SINR tham chiếu EKF)
+    gamma_0_linear: 10.0               # Gamma_0 tuyến tính = 10.0
+    gamma_c_min_db: 7.7                # Ngưỡng SINR comm tối thiểu (dB)
+    gamma_c_min_linear: 5.88           # Ngưỡng SINR comm tuyến tính
+    gamma_s_min_db: 7.7                # Ngưỡng SINR sensing tối thiểu (dB)
+    gamma_s_min_linear: 5.95           # Ngưỡng SINR sensing tuyến tính
+    gamma_c_target_db: 15.0            # SINR comm mục tiêu (dB)
+    gamma_s_target_db: 10.0            # SINR sensing mục tiêu (dB)
+
+  # ----------------------------------------------------------------------------
+  # 7. Không gian kịch bản 3D (Simulation Scenario Geography)
+  # ----------------------------------------------------------------------------
+  scenario:
+    area_size_x_m: 1000.0              # L_x: Kích thước vùng mô phỏng trục X: 1000.0 m
+    area_size_y_m: 1000.0              # L_y: Kích thước vùng mô phỏng trục Y: 1000.0 m
+    area_size_z_m: 100.0               # L_z: Giới hạn độ cao trục Z: 100.0 m
+    bs_height_m: 25.0                  # Độ cao đặt antenna trạm BS: 25.0 m
+    ue_height_m: 1.5                   # Độ cao thiết bị người dùng UE: 1.5 m
+    target_height_min_m: 10.0          # Độ cao bay tối thiểu của target: 10.0 m
+    target_height_max_m: 60.0          # Độ cao bay tối đa của target: 60.0 m
+    target_velocity_min_mps: 5.0       # Vận tốc tối thiểu của target: 5.0 m/s (~18 km/h)
+    target_velocity_max_mps: 25.0      # Vận tốc tối đa của target: 25.0 m/s (~90 km/h)
+
+  # ----------------------------------------------------------------------------
+  # 8. Thời gian mô phỏng (Time Horizon)
+  # ----------------------------------------------------------------------------
+  simulation:
+    num_slots_per_episode: 100         # T = 100 khe thời gian mỗi episode (100 * 10 ms = 1.0 s)
+
+  # ----------------------------------------------------------------------------
+  # 9. Ràng buộc chỉ tiêu hệ thống (Optimization Constraints)
+  # ----------------------------------------------------------------------------
+  requirements:
+    min_ue_rate_mbps: 1.0              # R_k^min = 1.0 Mbps (Tốc độ truyền thông tối thiểu yêu cầu)
+    min_sensing_success_prob: 0.90     # P_m^min = 0.90 (Xác suất sensing thành công tối thiểu)
+    min_detection_prob: 0.90           # P_D^min = 0.90 (Xác suất phát hiện tối thiểu mỗi BS-target)
+    max_prob_false_alarm: 1.0e-4       # P_F = 1.0e-4 (Xác suất báo động giả)
