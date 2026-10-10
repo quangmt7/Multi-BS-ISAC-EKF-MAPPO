@@ -3,5 +3,5 @@ __pycache__/
 .DS_Store
 *.pt
 *.log
-test/
-.env/
+.env\
+test\
