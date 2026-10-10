@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 # Import components from AgentComponents.py
 try:
-    from PPO.AgentComponents import Actor, Critic, MultiAgentRolloutBuffer
+    from ppo.AgentComponents import Actor, Critic, MultiAgentRolloutBuffer
 except ImportError:
     from AgentComponents import Actor, Critic, MultiAgentRolloutBuffer
 
