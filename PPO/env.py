@@ -4,7 +4,7 @@ from channel.channel import WirelessChannel
 from communication.communication import CommunicationManager
 from sensing.detection import Detection
 from sensing.bs_measurement import BSMeasurement
-from sensing.efk import EKF
+from sensing.ekf import EKF  
 
 class MultiISACEnv:
     """

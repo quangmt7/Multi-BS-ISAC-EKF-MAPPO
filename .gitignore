@@ -1,12 +1,7 @@
 __pycache__/
-HEAD
-*.py[cod]
-.pytest_cache/
-results/
 *.pyc
 .DS_Store
 *.pt
 *.log
 test/
 .env/
-
