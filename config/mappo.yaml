@@ -12,7 +12,7 @@ mappo_parameters:
     entropy_coef: 0.01                 # Trọng số khuyến khích khám phá (Entropy bonus coefficient)
     value_loss_coef: 0.5               # Trọng số hàm mất mát của Critic (Value loss coefficient)
     max_grad_norm: 0.5                 # Ngưỡng cắt gradient chống bùng nổ (Gradient clipping)
-    use_clipped_value_loss: true       # Sử dụng clipped value loss để huấn luyện Critic ổn định
+    use_clipped_value_loss: false       # Sử dụng clipped value loss để huấn luyện Critic ổn định
     use_huber_loss: false              # FALSE: Sử dụng MSE loss (Mean Squared Error) cho Critic theo yêu cầu
     huber_delta: 10.0                  # (Không sử dụng khi use_huber_loss: false)
     use_linear_lr_decay: false         # Giảm dần tốc độ học tuyến tính theo tiến độ training
@@ -21,7 +21,6 @@ mappo_parameters:
   # 2. Không gian hành động lai (Hybrid Action Space)
 
   action_space:
-    num_discrete_choices: 31           # 1 (idle) + 15 (targets) + 15 (UEs) = 31 lựa chọn (M=15, K=15)
     power_action_type: "continuous"    # Công suất liên tục (Squashed Gaussian / Beta distribution)
     power_min_watt: 0.0                # Công suất phát tối thiểu trên mỗi PRB (W)
 
@@ -30,7 +29,6 @@ mappo_parameters:
   # ----------------------------------------------------------------------------
   network:
     actor:
-    
       hidden_dims: [256, 256]          # Kích thước các lớp ẩn của Actor
       activation: "tanh"               # Hàm kích hoạt tanh theo yêu cầu
       use_layer_norm: true             # Chuẩn hóa Layer Normalization
@@ -38,8 +36,6 @@ mappo_parameters:
       gain: 0.01                       # Hệ số gain lớp output của Actor
 
     critic:
-  
-      input_dim_concatenated_obs: 290  # Tùy chọn dự phòng: ghép quan sát 5 BS * 58 chiều cục bộ = 290
       hidden_dims: [256, 128]          # 2 lớp ẩn: 100 -> 256 -> 128 -> 1 (tối ưu cho activation tanh)
       activation: "tanh"               # Hàm kích hoạt tanh theo yêu cầu
       use_layer_norm: true             # Chuẩn hóa Layer Normalization

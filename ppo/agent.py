@@ -13,7 +13,7 @@ class MAPPOAgent:
     Multi-Agent Proximal Policy Optimization controller.
     Manages decentralized Actor policies with Parameter Sharing and a Centralized Critic for cooperative ISAC.
     """
-    def __init__(self, config: dict, local_obs_dim, global_state_dim ):
+    def __init__(self, config: dict, local_obs_dim, global_state_dim):
         """
         Initialize networks, dual optimizers, and algorithmic hyperparameters for MAPPO.
 

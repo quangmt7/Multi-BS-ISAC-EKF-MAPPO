@@ -1,31 +1,36 @@
 import numpy as np
+from comUtils.common import wrap_angle 
 
 
 class BSMeasurement:
     """
     This class is in each BS, implementing the measurement based on the aggregated SINR
     Argument :
-    bs_position : [float, float, float] position of BS
-    gamma_ref : float (effective SINR (const for each BS))
-    sigma_r_ref : float (variance of the range measurement at the reference condition)
-    sigma_theta_ref : float (variance of the theta measurement at the reference condition)
-    sigma_phi_ref : float (variance of the phi measurement at the reference condition)
-    ap_theta_ratio : float (antenna aperture ratio for theta (of BS / reference))
-    ap_phi_ratio : float (antenna aperture ratio for phi (of BS / reference))
+        ekf_config : (dict) configuration for EKF system
+            state_dim : (int) number of state's dimension
+            measurement_dim : (int) number of measurement's dimension
+            gamma_0 : (float) reference SINR
+            sigma_r_0 : (float) reference range variance
+            sigma_theta_0 : (float) reference azumuth variance
+            sigma_phi_0 : (float) reference elevation variance
+            ap_theta_ratio : (float) ratio between aperture of the BS and reference on azimuth
+            ap_phi_ratio : (float) ratio between aperture of the BS and reference on elevation
+        bs_position : [float, float, float] position of BS
     """
-    def __init__(self, bs_position, gamma_ref, sigma_r_ref, sigma_theta_ref, sigma_phi_ref,
-        ap_theta_ratio, ap_phi_ratio):
-    
+    def __init__(self, ekf_config, bs_position):
+
+        self.state_dim = ekf_config["state_dim"]
+        self.measurement_dim = ekf_config["state_dim"]
         self.bs_position = bs_position
 
-        self.gamma_ref = gamma_ref
+        self.gamma_0 = ekf_config["measurement_noise"]["gamma_0_linear"]
 
-        self.sigma_r_ref = sigma_r_ref
-        self.sigma_theta_ref = sigma_theta_ref
-        self.sigma_phi_ref = sigma_phi_ref
+        self.sigma_r_0 = ekf_config["measurement_noise"]["sigma_range_0"]
+        self.sigma_theta_0 = ekf_config["measurement_noise"]["sigma_azimuth_0_rad"]
+        self.sigma_phi_0 = ekf_config["measurement_noise"]["sigma_elevation_0_rad"]
 
-        self.ap_theta_ratio = ap_theta_ratio
-        self.ap_phi_ratio = ap_phi_ratio
+        self.ap_theta_ratio = ekf_config["measurement_noise"]["aperture"]["d_ap_theta_ratio"]
+        self.ap_phi_ratio = ekf_config["measurement_noise"]["aperture"]["d_ap_phi_ratio"] 
 
     def measurement_function(self, target_state):
         """
@@ -35,36 +40,42 @@ class BSMeasurement:
         Return:
             measurement (float)[3] : state of the target (with range, azimuth, elevation)
         """
-        x, y, z = target_state[:3]
-        xb, yb, zb = self.bs_position
-        dx = x - xb
-        dy = y - yb
-        dz = z - zb
+        # Check the number of state's direction
+        if (len(target_state) == self.state_dim):
+            x, y, z = target_state[:3]
+            xb, yb, zb = self.bs_position
+            dx = x - xb
+            dy = y - yb
+            dz = z - zb
 
-        horizontal_distance = np.sqrt(dx**2 + dy**2)
-        range_ = np.sqrt(dx**2 + dy**2 + dz**2)
-        azimuth = np.arctan2(dy, dx)
-        elevation = np.arctan2(dz, horizontal_distance)
+            horizontal_distance = np.sqrt(dx**2 + dy**2)
+            range_ = np.sqrt(dx**2 + dy**2 + dz**2)
+            azimuth = np.arctan2(dy, dx)
+            elevation = np.arctan2(dz, horizontal_distance)
 
         return np.array([range_, azimuth, elevation])
 
     def measurement_covariance(self, sensing_sinr):
         """
         Return measurement noise covariance R of the measurement.
+        SINR must > 0 (= 0 -> not sense -> not calculate)
         Argument : 
             sensing_sinr (float) : effective SINR
         Return :
             R covariance (np.diag[3][3]) : covariance of the measurement.
         """
-        sinr_ratio = self.gamma_ref / sensing_sinr
+        if (sensing_sinr == 0):
+            return ValueError(sensing_sinr)
+        else :
+            sinr_ratio = self.gamma_ref / sensing_sinr
 
-        sigma_r_sq = (self.sigma_r_ref ** 2 * sinr_ratio)
+            sigma_r_sq = (self.sigma_r_0 ** 2 * sinr_ratio)
 
-        sigma_theta_sq = (self.sigma_theta_ref ** 2 * (sinr_ratio / self.ap_theta_ratio ** 2))
+            sigma_theta_sq = (self.sigma_theta_0 ** 2 * (sinr_ratio / self.ap_theta_ratio ** 2))
 
-        sigma_phi_sq = (self.sigma_phi_ref ** 2 * (sinr_ratio / self.ap_phi_ratio ** 2))
+            sigma_phi_sq = (self.sigma_phi_0 ** 2 * (sinr_ratio / self.ap_phi_ratio ** 2))
 
-        return np.diag([sigma_r_sq, sigma_theta_sq, sigma_phi_sq])
+            return np.diag([sigma_r_sq, sigma_theta_sq, sigma_phi_sq])
     
     def generate_measurement(self, target_state, sensing_sinr):
         """
@@ -83,6 +94,10 @@ class BSMeasurement:
         noise = np.random.multivariate_normal(mean=np.zeros(3),cov=R)
 
         measurement = true_measurement + noise
+
+        # Wrap azimuth and elevation to (-pi, pi].
+        measurement[1] = wrap_angle(measurement[1])
+        measurement[2] = wrap_angle(measurement[2])
 
         return measurement, R
     

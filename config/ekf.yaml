@@ -42,10 +42,8 @@ ekf_parameters:
 
     # Khẩu độ số antenna tham chiếu và thực tế
     aperture:
-      d_ap_theta_0: 1.0                # Khẩu độ tham chiếu góc phương vị D_{ap,theta,0}
-      d_ap_phi_0: 1.0                  # Khẩu độ tham chiếu góc cao D_{ap,phi,0}
-      d_ap_theta_b: 1.0                # Khẩu độ antenna BS b góc phương vị D_{ap,theta,b}
-      d_ap_phi_b: 1.0                  # Khẩu độ antenna BS b góc cao D_{ap,phi,b}
+      d_ap_theta_ratio: 1.0                # Khẩu độ tham chiếu góc phương vị D_{ap,theta,0}
+      d_ap_phi_ratio: 1.0                  # Khẩu độ tham chiếu góc cao D_{ap,phi,0}
 
     # Giới hạn an toàn số học (Numerical stability limits)
     min_range_variance: 1.0e-4         # Phương sai khoảng cách tối thiểu (tránh suy biến)

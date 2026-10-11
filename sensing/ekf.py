@@ -1,23 +1,41 @@
 import numpy as np
-import scipy
 
 class EKF:
     """
     This class is used to calculate uncertainty and update target's state
     Argument : 
+        state_dim : number of state's dimension
+        measurement_dim : number of measurement's demension
+        num_target : number of target
         dt : time frame
-        process_noise : noise matrix, include all noise for six components
+        process_noise : all noise matrix, include all noise for six components
         initial_states : initial states for all target
         initial_covariances : initial covariances for all target
     """
-    def __init__(self, dt, process_noise, initial_states, initial_covariances):
+    def __init__(self, state_dim, measurement_dim, num_target, dt, process_noise, 
+                 initial_states, initial_covariances):
+        self.state_dim = state_dim
+        self.measurement_dim = measurement_dim
+        self.num_target = num_target
         self.dt = dt
-        self.process_noise = process_noise
-        self.initial_states = initial_states
-        self.initial_covariances = initial_covariances
-        self.initial_aoi = np.zeros(len(self.initial_states))
+        self.con_noise_spec_dense = process_noise["continuous_noise_spectral_density"]
+        self.q_diag = np.diag(process_noise["q_diag"])
+        self.p_diag_init = np.diag(initial_covariances["p_diag_init"])
 
-        # State transition matrix
+        # Initial state estimate for each target
+        self.state_list = [
+            np.asarray(state, dtype=float).copy()
+            for state in initial_states
+        ]
+
+        # Each target has its own covariance matrix
+        self.covariance_list = [
+            self.p_diag_init.copy()
+            for _ in range(self.num_target)
+        ]
+
+        # Initial AoI for each target
+        self.aoi_list = np.zeros(self.num_target)
         self.F = np.array([
             [1, 0, 0, dt, 0, 0],
             [0, 1, 0, 0, dt, 0],
@@ -33,13 +51,13 @@ class EKF:
         Argument:
             target_id (int) : id of the target
         """
-        state = self.states[target_id]
-        covariance = self.covariances[target_id]
+        state = self.state_list[target_id]
+        covariance = self.covariance_list[target_id]
         predicted_state = self.F @ state
-        predicted_covariance = (self.F @ covariance @ self.F.T + self.Q)
+        predicted_covariance = (self.F @ covariance @ self.F.T + self.q_diag)
 
-        self.states[target_id] = predicted_state
-        self.covariances[target_id] = predicted_covariance
+        self.state_list[target_id] = predicted_state
+        self.covariance_list[target_id] = predicted_covariance
 
     def ideal_measurement_function(self, state, bs_position):
         """
@@ -122,8 +140,8 @@ class EKF:
         if not measurements:
             return
 
-        state = self.states[target_id]
-        covariance = self.covariances[target_id]
+        state = self.state_list[target_id]
+        covariance = self.covariance_list[target_id]
 
         measurement_list = []
         predicted_measurement_list = []
@@ -151,15 +169,14 @@ class EKF:
         H_batch = np.vstack(jacobian_list)
 
         # Block diagonal R
-        measurement_dim = 3
         num_measurements = len(measurements)
 
-        R_batch = np.zeros((measurement_dim * num_measurements, 
-                            measurement_dim * num_measurements))
+        R_batch = np.zeros((self.measurement_dim * num_measurements, 
+                            self.measurement_dim * num_measurements))
 
         for i, R in enumerate(covariance_list):
-            start = i * measurement_dim
-            end = start + measurement_dim
+            start = i * self.measurement_dim
+            end = start + self.measurement_dim
 
             R_batch[start:end, start:end] = R
 
@@ -180,8 +197,8 @@ class EKF:
 
         updated_covariance = (I - K @ H_batch) @ covariance
 
-        self.states[target_id] = updated_state
-        self.covariances[target_id] = updated_covariance
+        self.state_list[target_id] = updated_state
+        self.covariance_list[target_id] = updated_covariance
 
     def update_aoi(self, target_id, detected):
         """
@@ -191,6 +208,6 @@ class EKF:
             detected (bool) : is the target id=target_id detected
         """
         if detected:
-            self.aois[target_id] = 0.0
+            self.aoi_list[target_id] = 0.0
         else:
-            self.aois[target_id] += self.dt
+            self.aoi_list[target_id] += self.dt
