@@ -4,7 +4,8 @@ from channel.channel import WirelessChannel
 from communication.communication import CommunicationManager
 from sensing.detection import Detection
 from sensing.bs_measurement import BSMeasurement
-from sensing.ekf import EKF  
+from sensing.ekf import EKF
+
 
 class MultiISACEnv:
     """
@@ -34,7 +35,11 @@ class MultiISACEnv:
         # Power and scenario geometry limits
         self.p_max = float(sys_config["max_tx_power_watt"])
         self.noise_power = float(sys_config["noise_power_per_prb_watt"])
-        self.d_max = float(scenario_config["diagonal_max_m"])
+        
+        lx = float(scenario_config["area_size_x_m"])
+        ly = float(scenario_config["area_size_y_m"])
+        lz = float(scenario_config["area_size_z_m"])
+        self.d_max = float(np.sqrt(lx**2 + ly**2 + lz**2))
 
         # System requirements
         self.r_min = float(req_config["min_ue_rate_mbps"])
@@ -55,6 +60,7 @@ class MultiISACEnv:
         self.a_max = float(norm_cfg["a_max"])                         
         self.u_pos_max = float(norm_cfg["u_pos_max"])                  
         self.u_vel_max = float(norm_cfg["u_vel_max"])              
+        self.se_max = 10.0  # Max spectral efficiency for observation normalization (bps/Hz)              
 
         self.c1 = float(penalty_cfg["c1_rate_qos"])              
         self.c2 = float(penalty_cfg["c2_sensing_reliability"])   
@@ -64,7 +70,7 @@ class MultiISACEnv:
         self.current_step: int = 0
         self.aoi: np.ndarray = np.zeros(self.num_targets, dtype=np.float32)
 
-        # Submodules initialization
+        # 3. Submodules initialization
         self.scenario = Scenario(self.config)
         self.channel = WirelessChannel(self.config)
         self.comm_managers = [
@@ -98,11 +104,41 @@ class MultiISACEnv:
         """
         if seed is not None:
             np.random.seed(seed)
+            if hasattr(self.channel, "rng"):
+                self.channel.rng = np.random.default_rng(seed)
             
         self.current_step = 0
         self.aoi = np.zeros(self.num_targets, dtype=np.float32)
-        self.bs_positions, self.ue_positions, self.target_states = self.scenario.reset()
-        self.ekf.reset(self.target_states)
+
+        # Scenario.reset() returns a dictionary of network positions
+        scen_data = self.scenario.reset(seed=seed)
+        self.bs_positions = scen_data["bs_positions"]
+        self.ue_positions = scen_data["ue_positions"]
+        self.target_states = scen_data["target_states"]
+
+        # Create one BSMeasurement model for each BS with its true 3D position
+        self.bs_models = {
+            b: BSMeasurement(
+                bs_position=self.bs_positions[b],
+                gamma_ref=self.gamma_ref,
+                sigma_r_ref=self.sigma_r_ref,
+                sigma_theta_ref=self.sigma_theta_ref,
+                sigma_phi_ref=self.sigma_phi_ref,
+                ap_theta_ratio=self.ap_theta_ratio,
+                ap_phi_ratio=self.ap_phi_ratio,
+            )
+            for b in range(self.num_bs)
+        }
+
+        # Initialize EKF for the new episode targets
+        if hasattr(self.ekf, "reset"):
+            self.ekf.reset(self.target_states)
+        else:
+            self.ekf.states = np.array(self.target_states, dtype=float, copy=True)
+            p0 = np.diag(self.config["ekf_parameters"]["initial_covariance"]["p_diag_init"])
+            self.ekf.covariances = np.array([p0.copy() for _ in range(self.num_targets)], dtype=float)
+            self.ekf.aois = np.zeros(self.num_targets, dtype=float)
+
         self.pred_target_states = self.target_states.copy()
 
         # Initialize residual resources and channel state metrics
@@ -260,11 +296,15 @@ class MultiISACEnv:
         # 1. Action mapping
         X_s, X_c, P_s, P_c = self.action_mapping(actions_prb, actions_pwr)
         
-        self.target_states = self.scenario.step_targets(self.slot_duration)
+        self.scenario.step_targets()
+        self.target_states = self.scenario.get_target_states()
         target_pos = self.target_states[:, :3]  # True target coordinates (x, y, z)
     
-        # 2. EKF predict
-        self.pred_target_states = self.ekf.predict()  # Predicted target states s_hat(t|t-1)
+        # 2. EKF predict (predict next target states for beamforming direction)
+        for m in range(self.num_targets):
+            self.ekf.predict(m)
+        if hasattr(self.ekf, "states") and self.ekf.states is not None:
+            self.pred_target_states = np.array(self.ekf.states, dtype=np.float32)
         pred_target_pos = self.pred_target_states[:, :3]  # Predicted positions [M, 3]
         
         # 3. Channel simulation
@@ -295,8 +335,8 @@ class MultiISACEnv:
             # Cộng dồn throughput các BS cấp cho UE (CoMP)
             user_rates += rate_b
             sinr_comm[b] = sinr_b
-            # Cập nhật đặc trưng H_avg comm cục bộ của BS b [K]
-            self.last_h_comm[b] = np.log2(1.0 + np.maximum(np.mean(sinr_b, axis=1), 0.0)).astype(np.float32)
+            # H_avg comm of BS b [K] (average spectral efficiency of PRB)
+            self.last_h_comm[b] = np.mean(se_b, axis=1).astype(np.float32)
         user_rates_mbps = user_rates / 1e6  # [K] (Mbps)
         # Update average spectral efficiency features H_avg cho sensing
         self.last_h_sens = np.log2(1.0 + np.maximum(np.mean(channel_out["sensing_sinr_prb"], axis=2), 0.0)).astype(np.float32)
@@ -348,8 +388,21 @@ class MultiISACEnv:
         next_global_state = self._get_global_state()
         
         # Aggregate step statistics and diagnostics
+        target_vel = self.target_states[:, 3:6]
+        target_speeds = np.linalg.norm(target_vel, axis=1)
+        pos_errors = np.linalg.norm(self.pred_target_states[:, :3] - target_pos, axis=1)
+        vel_errors = np.linalg.norm(self.pred_target_states[:, 3:6] - target_vel, axis=1)
+        num_served_ues = float(np.sum(np.sum(X_c, axis=(0, 2)) > 0))
+        num_qos_ues = float(np.sum(user_rates_mbps >= self.r_min))
+
         info = {
             "step": self.current_step,
+            "target_pos_mean_m": float(np.mean(np.linalg.norm(target_pos, axis=1))),
+            "target_speed_mean_mps": float(np.mean(target_speeds)),
+            "pos_error_mean_m": float(np.mean(pos_errors)),
+            "vel_error_mean_mps": float(np.mean(vel_errors)),
+            "num_served_ues": num_served_ues,
+            "num_qos_ues": num_qos_ues,
             "aoi_mean": float(np.mean(self.aoi)),
             "u_pos_mean": float(np.mean(u_pos)),
             "u_vel_mean": float(np.mean(u_vel)),
@@ -407,9 +460,9 @@ class MultiISACEnv:
                 dist = float(np.linalg.norm(pred_target_pos[m] - self.bs_positions[b]))
                 d_pred_b[m] = np.clip(dist / self.d_max, 0.0, 1.0)
 
-            # 2. Local communication and sensing channel features [K] and [M]
-            h_comm_b = self.last_h_comm[b]  # [K]
-            h_sens_b = self.last_h_sens[b]  # [M]
+            # 2. Local communication and sensing channel features [K] and [M] (normalized to [0, 1])
+            h_comm_b = np.clip(self.last_h_comm[b] / self.se_max, 0.0, 1.0).astype(np.float32)
+            h_sens_b = np.clip(self.last_h_sens[b] / self.se_max, 0.0, 1.0).astype(np.float32)
 
             # 3. Normalized 3D position of BS b [3]
             bs_pos_norm = np.clip(self.bs_positions[b] / self.d_max, -1.0, 1.0).astype(np.float32)
@@ -462,9 +515,11 @@ class MultiISACEnv:
                 d_pred[b, m] = np.clip(dist / self.d_max, 0.0, 1.0)
         d_pred_flat = d_pred.flatten()
 
-        # 3. Spectral efficiency features: [B * K] and [B * M]
-        h_comm_flat = self.last_h_comm.flatten()
-        h_sens_flat = self.last_h_sens.flatten()
+        # 3. Spectral efficiency features normalized to [0, 1]: [B * K] and [B * M]
+        h_comm_norm = np.clip(self.last_h_comm / self.se_max, 0.0, 1.0).astype(np.float32)
+        h_sens_norm = np.clip(self.last_h_sens / self.se_max, 0.0, 1.0).astype(np.float32)
+        h_comm_flat = h_comm_norm.flatten()
+        h_sens_flat = h_sens_norm.flatten()
 
         # 4. Residual resources: [B] and [B]
         p_res_norm = np.clip(self.p_res / self.p_max, 0.0, 1.0).astype(np.float32)
