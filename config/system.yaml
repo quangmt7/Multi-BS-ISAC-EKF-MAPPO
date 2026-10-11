@@ -4,16 +4,16 @@ system_parameters:
   # 1. Quy mô hệ thống (Network Entities & Sets)
   # ----------------------------------------------------------------------------
   num_bs: 5                            # B = 5 trạm BS
-  num_ue: 15                            # K = 15 người dùng truyền thông (UEs)
-  num_target: 15                        # M = 15 mục tiêu di động cần theo dõi (Targets)
-  num_prb: 300                         # N_PRB = 300 khối tài nguyên vật lý (PRBs)
+  num_ue: 10                            # K = 10 người dùng truyền thông (UEs)
+  num_target: 5                        # M = 5 mục tiêu di động cần theo dõi (Targets)
+  num_prb_bs: 51                         # N_PRB_BS = 51 khối tài nguyên vật lý trên 1 BS (PRBs)
 
   # ----------------------------------------------------------------------------
   # 2. Cấu hình vô tuyến và OFDM 5G NR (Radio Resources & Numerology)
   # Băng tần 5G NR FR1 (Sub-6 GHz, ví dụ băng n78 3.5 GHz)
   # SCS = 30 kHz (Numerology mu = 1), 1 PRB = 12 subcarriers * 30 kHz = 360 kHz
   # ----------------------------------------------------------------------------
-  bandwidth_mhz: 100.0                 # Tổng băng thông hệ thống: 100.0 MHz
+  bandwidth_mhz_bs: 20.0                 # Tổng băng thông trong 1 BS: 20.0 MHz
   carrier_frequency_ghz: 3.5           # Tần số sóng mang trung tâm f_c = 3.5 GHz
   subcarrier_spacing_khz: 30.0         # Khoảng cách sóng mang con (SCS) = 30.0 kHz
   prb_bandwidth_khz: 360.0             # Băng thông 1 PRB: B_0 = B_PRB = 360.0 kHz
