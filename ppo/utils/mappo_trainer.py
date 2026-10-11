@@ -10,9 +10,9 @@ from typing import Any, Callable, Mapping
 import numpy as np
 import torch
 
-from PPO.utils.checkpoint_manager import CheckpointManager
-from PPO.utils.project_config import ProjectConfig
-from PPO.utils.runtime_contract import RuntimeContract
+from ppo.utils.checkpoint_manager import CheckpointManager
+from ppo.utils.project_config import ProjectConfig
+from ppo.utils.runtime_contract import RuntimeContract
 
 
 class MAPPOTrainer:
@@ -80,6 +80,7 @@ class MAPPOTrainer:
         episode_length = int(training["episode_length"])
         save_interval = int(training.get("save_interval", 0))
         log_interval = int(training.get("log_interval", 1))
+        update_interval = int(training.get("update_interval", 2))
         seed = int(training.get("seed", 0))
 
         self._seed_everything(seed)
@@ -180,10 +181,13 @@ class MAPPOTrainer:
                             "The current MAPPO agent requires at least two transitions "
                             "to normalize advantages without producing NaN"
                         )
-
-                    update_metrics = self.agent.update(buffer, global_state)
-                    numeric_metrics = self._numeric_metrics(update_metrics)
-                    self.contract.finite_agent_parameters(self.agent)
+                    
+                    # We should not update policy too fast, let's try update after episodes
+                    numeric_metrics = {}
+                    if (update_interval != 0) and ((episode + 1) % update_interval == 0):
+                        update_metrics = self.agent.update(buffer, global_state)
+                        numeric_metrics = self._numeric_metrics(update_metrics)
+                        self.contract.finite_agent_parameters(self.agent)
 
                     record: dict[str, Any] = {
                         "episode": episode + 1,
@@ -226,7 +230,7 @@ class MAPPOTrainer:
         """
 
         try:
-            from PPO.env import MultiISACEnv
+            from ppo.env import MultiISACEnv
         except (ImportError, ModuleNotFoundError, SyntaxError) as exc:
             raise RuntimeError(
                 "PPO.env or one of its physical-model dependencies is not ready. "
@@ -251,7 +255,7 @@ class MAPPOTrainer:
         if self.agent is not None and self.buffer_factory is not None:
             return
         try:
-            from PPO.agent import MAPPOAgent, MultiAgentRolloutBuffer
+            from ppo.agent import MAPPOAgent, MultiAgentRolloutBuffer
         except (ImportError, ModuleNotFoundError) as exc:
             raise RuntimeError(
                 "PPO.agent is unavailable on this branch. Merge the reviewed "

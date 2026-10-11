@@ -12,6 +12,7 @@ class WirelessChannel:
          self.num_ues = sys_config["num_ue"]
          self.num_targets = sys_config["num_target"]
          self.n_prb = sys_config["num_prb"]
+         self.shadowing = sys_config["shadowing_std_db"]
          
          self.carrier_freq = float(sys_config["carrier_frequency_ghz"]) * 1e9
          self.c = 3e8
@@ -38,7 +39,8 @@ class WirelessChannel:
          self.ibi_eta = float(channel_config["ibi_coupling_eta"])
 
         # Reference path loss at 1m: beta0 = (lambda / (4 * pi * 1))^2
-         self.beta0 = float((self.wavelength / (4.0 * np.pi * 1.0)) ** 2)
+        # This should be taken through config file
+         self.beta0 = float(channel_config["pathloss_const_db"])
 
         # Precompute C2S PRB distance leakage matrix eta_{r, r'} (R, R)
          prb_indices = np.arange(self.n_prb)
@@ -82,9 +84,6 @@ class WirelessChannel:
         G_beam_c = self.g_max * (np.abs(inner_prod) ** self.beam_q)
         return G_beam_c.astype(np.float32)
  
-     
-     
-     
     def compute_sensing_beamforming_gain(self, bs_pos, target_pos, pred_target_pos) :
         """
         Compute sensing beamforming gain
@@ -129,8 +128,7 @@ class WirelessChannel:
         
         # 1.Pathloss, shadowing
         pl_d0 = -10.0 * np.log10(self.beta0)
-        sigma_sf = 8.0
-        X_sigma = self.rng.normal(0.0, sigma_sf, size=(self.num_bs, self.num_ues))  # (B, K)
+        X_sigma = self.rng.normal(0.0, self.shadowing, size=(self.num_bs, self.num_ues))  # (B, K)
         pl_db = pl_d0 + 10.0 * self.alpha_c * np.log10(dist) + X_sigma              # Eq. (68)
         G_path = 10.0 ** (-pl_db / 10.0)                                             # Eq. (69)
         

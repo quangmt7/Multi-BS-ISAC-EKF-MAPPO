@@ -55,15 +55,13 @@ ekf_parameters:
   # 5. Xác suất phát hiện và sensing thành công (Detection Probability)
   detection:
     prob_false_alarm: 1.0e-4           # P_F = 1.0e-4 (Xác suất báo động giả)
-    min_sensing_success_prob: 0.90     # P_m^min = 0.90 (Xác suất sensing thành công tối thiểu yêu cầu)
-    min_detection_prob: 0.90           # P_D^min = 0.90 (Xác suất phát hiện tối thiểu mỗi BS-target pair)
 
   # ----------------------------------------------------------------------------
   # 6. Ngưỡng bất định ước lượng trạng thái (Uncertainty Limits)
 
   uncertainty_limits:
-    u_pos_max: 20.0                    # U_m^{pos,max} = 20.0 m^2 (Ngưỡng bất định vị trí tối đa)
-    u_vel_max: 10.0                    # U_m^{vel,max} = 10.0 m^2/s^2 (Ngưỡng bất định vận tốc tối đa)
+    u_pos_max: 100.0                    # U_m^{pos,max} = 20.0 m^2 (Ngưỡng bất định vị trí tối đa)
+    u_vel_max: 100.0                    # U_m^{vel,max} = 10.0 m^2/s^2 (Ngưỡng bất định vận tốc tối đa)
 
   # ----------------------------------------------------------------------------
   # 7. Hợp nhất đo đạc Multi-BS EKF (Batch Matrix Measurement Fusion)

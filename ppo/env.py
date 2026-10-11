@@ -18,6 +18,7 @@ class MultiISACEnv:
 
         # 1. System parameters
         sys_config = config["system_parameters"]
+        ekf_config = config["ekf_parameters"]
         sim_config = sys_config["simulation"]
         req_config = sys_config["requirements"]
         scenario_config = sys_config["scenario"]
@@ -69,9 +70,20 @@ class MultiISACEnv:
         self.comm_managers = [
             CommunicationManager(self.config, bs_id=b) for b in range(self.num_bs)
         ]
-        self.ekf = EKF(self.config)
-        self.detection = Detection(self.config)
-        self.measurement = BSMeasurement(self.config)
+        self.ekf = EKF(ekf_config["state_dim"], ekf_config["measurement_dim"], 
+                       self.num_targets, ekf_config["dt"], ekf_config["process_noise"],
+                       ekf_config["initial_state"], ekf_config["initial_covariances"])
+        # Each BS should have a detection class and a measurement class
+        self.detection_list = []
+        self.measurement_list = []
+        for i in range(self.num_bs):
+            self.detection_list.append(Detection(ekf_config["detection"]))
+            self.measurement_list.append(BSMeasurement(ekf_config, bs_position=self.bs_positions[i]))
+        
+        # Initialize probability list
+        self.prob_suc = np.zeros(self.num_targets)
+        # Detection mask
+        self.detect_mask = np.zeros((self.num_bs, self.num_targets))
 
     def reset(self, seed=None):
         """
@@ -101,6 +113,9 @@ class MultiISACEnv:
         
         local_obs_list = self._get_local_observations()
         global_state = self._get_global_state()
+        # Reset the prob and detect_mask
+        self.prob_suc = np.zeros(self.num_targets)
+        self.detect_mask = np.zeros((self.num_bs, self.num_targets))
         return local_obs_list, global_state
 
     def action_mapping(self, actions_prb, actions_pwr):
@@ -285,36 +300,42 @@ class MultiISACEnv:
         user_rates_mbps = user_rates / 1e6  # [K] (Mbps)
         # Update average spectral efficiency features H_avg cho sensing
         self.last_h_sens = np.log2(1.0 + np.maximum(np.mean(channel_out["sensing_sinr_prb"], axis=2), 0.0)).astype(np.float32)
+        spec_eff_max = np.log2(1+max(sinr_comm))
         
-        # 5. Sensing: Detection & measurement generation
-        det_probs, p_suc = self.detection.compute_detection_probabilities(effective_sensing_sinr)
-        
-        # Sample binary detections D_{b,m} ~ Bernoulli(P_D)
-        detection_mask = self.detection.sample_detections(det_probs)  # [B, M] bool
+        # 5. Sensing: Each BS detect and build their detect maps
+        for target in range(self.num_targets):
+            for i in range(self.num_bs):
+                if effective_sensing_sinr[i][target] > 0:
+                    detected, p_d = self.detection_list[i].detect(effective_sensing_sinr[i][target])
+                    self.prob_suc[target] *= (1 - p_d)
+                    if detected == True:
+                        self.detect_mask[i][target] = 1
+            self.prob_suc[target] = 1 - self.prob_suc[target]
         
         # Collect measurements y_{b,m} = [r, theta, phi]^T and covariance matrices R_{b,m}
-        measurements_dict, covariances_dict = self.measurement.get_measurements(
-            bs_positions=self.bs_positions,
-            target_positions=target_pos,
-            effective_sinr=effective_sensing_sinr,
-            detection_mask=detection_mask
-        )
+        # Only measure if the detection is successfull
+        for target in range(self.num_targets):
+            for i in range(self.num_bs):
+                if self.detect_mask[i][target] == 1:
+                    measurements_dict, covariances_dict = self.measurement_list[i].gen_meas(
+                        target_positions=target_pos[target],
+                        effective_sinr=effective_sensing_sinr[i][target])
         
         # 6. EKF state update & AoI update
         for m in range(self.num_targets):
             if len(measurements_dict[m]) > 0:  # Target m detected by at least one BS
-                self.ekf.batch_update(m, measurements_dict[m], self.bs_positions)
+                self.ekf.update(m, measurements_dict[m])
                 self.aoi[m] = 0.0  # Reset AoI upon successful detection
             else:
                 self.aoi[m] += 1.0  # Increment AoI when target is missed
                 
         # 7. Compute reward (Objective + Hinge loss penalties)
-        u_pos, u_vel = self.ekf.get_uncertainties()
-        reward, r_obj, r_penalty, reward_info = self._compute_reward(
+        u_pos, u_vel = self.ekf.get_uncer()
+        reward, _, _, reward_info = self._compute_reward(
             P_s=P_s,
             P_c=P_c,
             user_rates=user_rates,
-            p_suc=p_suc,
+            p_suc=self.prob_suc,
             u_pos=u_pos,
             u_vel=u_vel
         )          
@@ -334,7 +355,7 @@ class MultiISACEnv:
             "u_vel_mean": float(np.mean(u_vel)),
             "comm_rate_mean_mbps": float(np.mean(user_rates_mbps)),
             "qos_satisfaction_rate": float(np.mean(user_rates_mbps >= self.r_min)),
-            "sensing_success_prob_mean": float(np.mean(p_suc)),
+            "sensing_success_prob_mean": float(np.mean(self.prob_suc)),
             "lost_target": lost_target,
         }
         info.update(reward_info)
@@ -361,7 +382,7 @@ class MultiISACEnv:
         Returns:
             local_obs_list (np.ndarray): Shape [B, local_obs_dim]
         """
-        u_pos, u_vel = self.ekf.get_uncertainties()
+        u_pos, u_vel = self.ekf.get_uncer()
         u_pos_norm = np.clip(u_pos / self.u_pos_max, 0.0, 1.0).astype(np.float32)  # [M]
         u_vel_norm = np.clip(u_vel / self.u_vel_max, 0.0, 1.0).astype(np.float32)  # [M]
         aoi_norm = np.clip(self.aoi / self.a_max, 0.0, 1.0).astype(np.float32)      # [M]
@@ -427,7 +448,7 @@ class MultiISACEnv:
             global_state (np.ndarray): Shape [global_state_dim]
         """
         # 1. Uncertainty & AoI: [M], [M], [M]
-        u_pos, u_vel = self.ekf.get_uncertainties()
+        u_pos, u_vel = self.ekf.get_uncer()
         u_pos_norm = np.clip(u_pos / self.u_pos_max, 0.0, 1.0).astype(np.float32)
         u_vel_norm = np.clip(u_vel / self.u_vel_max, 0.0, 1.0).astype(np.float32)
         aoi_norm = np.clip(self.aoi / self.a_max, 0.0, 1.0).astype(np.float32)

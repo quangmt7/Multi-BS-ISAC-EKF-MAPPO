@@ -37,7 +37,7 @@ system_parameters:
   channel_and_interference:
     # --- Mô hình suy hao 3GPP & Radar ---
     pathloss_model: "3gpp_macro"       # Mô hình suy hao đường truyền 3GPP chuẩn
-    pathloss_const_db: 128.1           # Hằng số suy hao đường truyền (dB)
+    pathloss_const_db: 128.1           # Hằng số suy hao đường truyền tại mức tham chiếu 1 m (dB)
     pathloss_exponent_comm: 37.6       # Hệ số suy hao: 37.6 * log10(d_km) (tương ứng alpha_c = 3.76)
     pathloss_exponent_sensing: 2.0     # Số mũ suy hao 1 chiều radar: alpha_s = 2.0 (suy hao 2 chiều ~ d^4)
     shadowing_std_db: 6.0              # sigma_SF: Độ lệch chuẩn suy hao che khuất Log-normal (dB)

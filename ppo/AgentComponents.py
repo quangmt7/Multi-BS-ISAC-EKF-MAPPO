@@ -3,13 +3,15 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import Categorical, Normal
+from comUtils.common import get_activation, build_mlp
+
 class Actor(nn.Module):
     """
     Decentralized Actor network with parameter sharing across base stations (BSs).
     Note:
         Operates under decentralized execution: each BS executes the policy using only its local observation.
     """
-    def __init__(self, local_obs_dim, n_prb, num_targets, num_ues, h_dim=128):
+    def __init__(self, local_obs_dim, n_prb, num_targets, num_ues, net_conf):
         """
         Initialize the Actor network modules and policy heads.
 
@@ -18,24 +20,27 @@ class Actor(nn.Module):
             n_prb (int): Number of Physical Resource Blocks (PRBs) per BS.
             num_targets (int): Number of mobile sensing targets.
             num_ues (int): Number of communication users (UEs).
-            h_dim (int): Hidden dimension for MLP backbone layers. Default: 128.
+            net_conf (dict): Network configuration
 
         Return:
             None.
         """
         super().__init__()
         self.n_prb = n_prb
-        self.num_choices = 1 + num_targets + num_ues #number of choice for each prb 
+        self.num_choices = 1 + num_targets + num_ues #number of choice for each prb
+        self.hiddens_dim = net_conf["hiddens_dim"] 
+        # Use a common function to build the backbone
+        self.backbone, self.out_gain = build_mlp(input_dim=local_obs_dim,
+                                                output_dim=net_conf["hiddens_dim"][1],
+                                                hiddens_dim=net_conf["hiddens_dim"],
+                                                activation=net_conf["activation"],
+                                                use_layer_norm=net_conf["use_layer_norm"],
+                                                orthogonal_init=net_conf["orthogonal_init"],
+                                                gain=net_conf["gain"],
+                                                isActor=True)
         
-        self.backbone= nn.Sequential(
-            nn.Linear(local_obs_dim, h_dim),
-            nn.Tanh(),
-            nn.Linear(h_dim, h_dim),
-            nn.Tanh()
-        )
-        
-        self.prb_head = nn.Linear(h_dim, self.n_prb * self.num_choices) # sum of prb choice 
-        self.power_mean = nn.Linear(h_dim, self.n_prb) # n numbers of power allocation for n prb
+        self.prb_head = nn.Linear(net_conf["hiddens_dim"][1], self.n_prb * self.num_choices) # sum of prb choice 
+        self.power_mean = nn.Linear(net_conf["hiddens_dim"][1], self.n_prb) # n numbers of power allocation for n prb
         # Khởi tạo logstd = -1.0 (std = exp(-1.0) ≈ 0.36) giúp độ tản ban đầu vừa vặn với miền [0, 1]
         self.power_logstd = nn.Parameter(torch.full((1, self.n_prb), -1.0))
          
@@ -80,7 +85,9 @@ class Actor(nn.Module):
             u = power_dist.sample()
             action_power = torch.sigmoid(u)
         else:
-            u = torch.logit(action_power.clamp(1e-6, 1.0 - 1e-6))
+            # evaluation: clamp before logit to avoid NaN in the boundary
+            clamped_action = action_power.clamp(1e-6, 1.0 - 1e-6)
+            u = torch.log(clamped_action) - torch.log(1.0 - clamped_action)
 
         #softplus
         # ln(da/du) = -(softplus(u) + softplus(-u))
@@ -103,25 +110,26 @@ class Critic(nn.Module):
     Note:
         Operates under centralized training: accepts global state containing all BSs, targets, and channel info.
     """
-    def __init__(self, global_state_dim, h_dim=256):
+    def __init__(self, global_state_dim, net_conf):
         """
         Initialize the Centralized Critic network backbone.
 
         Argument:
             global_state_dim (int): Dimension of the global state vector.
-            h_dim (int): Hidden dimension for MLP layers. 
+            net_conf (dict): Network configuration
 
         Return:
             None.
         """
         super().__init__()
-        self.backbone = nn.Sequential(
-            nn.Linear(global_state_dim, h_dim),
-            nn.Tanh(),
-            nn.Linear(h_dim, h_dim),
-            nn.Tanh(),
-            nn.Linear(h_dim, 1)
-        )
+        self.backbone, self.out_gain = build_mlp(input_dim=global_state_dim,
+                        output_dim=1,
+                        hiddens_dim=net_conf["hiddens_dim"],
+                        activation=net_conf["activation"],
+                        use_layer_norm=net_conf["use_layer_norm"],
+                        orthogonal_init=net_conf["orthogonal_init"],
+                        gain=net_conf["gain"],
+                        isActor=False)
     
     def forward(self, global_state):
         """
@@ -230,15 +238,17 @@ class MultiAgentRolloutBuffer:
             b_truncateds (torch.Tensor)[T]: Batched timeout truncation flags.
             b_values (torch.Tensor)[T]: Batched Centralized Critic value estimates.
         """
-        b_obs = torch.tensor(np.array(self.local_obs), dtype=torch.float32, device=device)
-        b_states = torch.tensor(np.array(self.global_obs), dtype=torch.float32, device=device)
-        b_act_prb = torch.tensor(np.array(self.actions_prb), dtype=torch.int64, device=device)
-        b_act_pwr = torch.tensor(np.array(self.actions_pwr), dtype=torch.float32, device=device)
-        b_logprobs = torch.tensor(np.array(self.log_probs), dtype=torch.float32, device=device)
-        b_rewards = torch.tensor(np.array(self.rewards), dtype=torch.float32, device=device)
-        b_terminateds = torch.tensor(np.array(self.terminateds), dtype=torch.float32, device=device)
-        b_truncateds = torch.tensor(np.array(self.truncateds), dtype=torch.float32, device=device)
-        b_values = torch.tensor(np.array(self.values), dtype=torch.float32, device=device)
+        # Re-optimize to avoid twice copy (list -> numpy -> tensor)
+        b_obs = torch.as_tensor(np.array(self.local_obs), dtype=torch.float32, device=device)
+        b_states = torch.as_tensor(np.array(self.global_obs), dtype=torch.float32, device=device)
+        b_act_prb = torch.as_tensor(np.array(self.actions_prb), dtype=torch.int64, device=device)
+        b_act_pwr = torch.as_tensor(np.array(self.actions_pwr), dtype=torch.float32, device=device)
+        b_logprobs = torch.as_tensor(np.array(self.log_probs), dtype=torch.float32, device=device)
+        b_rewards = torch.as_tensor(np.array(self.rewards), dtype=torch.float32, device=device)
+        # terminated and truncated should use torch.bool
+        b_terminateds = torch.as_tensor(np.array(self.terminateds), dtype=torch.bool, device=device)
+        b_truncateds = torch.as_tensor(np.array(self.truncateds), dtype=torch.bool, device=device)
+        b_values = torch.as_tensor(np.array(self.values), dtype=torch.float32, device=device)
 
         return b_obs, b_states, b_act_prb, b_act_pwr, b_logprobs, b_rewards, b_terminateds, b_truncateds, b_values
 

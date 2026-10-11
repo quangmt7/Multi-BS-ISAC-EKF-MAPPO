@@ -17,8 +17,9 @@ class BSMeasurement:
             ap_phi_ratio : (float) ratio between aperture of the BS and reference on elevation
         bs_position : [float, float, float] position of BS
     """
-    def __init__(self, ekf_config, bs_position):
+    def __init__(self, bs_id, ekf_config, bs_position):
 
+        self.bs_id = bs_id
         self.state_dim = ekf_config["state_dim"]
         self.measurement_dim = ekf_config["state_dim"]
         self.bs_position = bs_position
@@ -77,7 +78,7 @@ class BSMeasurement:
 
             return np.diag([sigma_r_sq, sigma_theta_sq, sigma_phi_sq])
     
-    def generate_measurement(self, target_state, sensing_sinr):
+    def gen_meas(self, target_state, sensing_sinr):
         """
         Generate a noisy sensing measurement.
         Argument : 

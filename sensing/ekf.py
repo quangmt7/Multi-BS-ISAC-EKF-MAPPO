@@ -33,9 +33,9 @@ class EKF:
             self.p_diag_init.copy()
             for _ in range(self.num_target)
         ]
+        self.u_pos = np.zeros(self.num_target)
+        self.u_vel = np.zeros(self.num_target)
 
-        # Initial AoI for each target
-        self.aoi_list = np.zeros(self.num_target)
         self.F = np.array([
             [1, 0, 0, dt, 0, 0],
             [0, 1, 0, 0, dt, 0],
@@ -199,15 +199,16 @@ class EKF:
 
         self.state_list[target_id] = updated_state
         self.covariance_list[target_id] = updated_covariance
+        self.u_pos[target_id] = updated_covariance[0][0] + updated_covariance[1][1] + \
+                                updated_covariance[2][2]
+        self.u_vel[target_id] = updated_covariance[3][3] + updated_covariance[4][4] + \
+                                updated_covariance[5][5]
 
-    def update_aoi(self, target_id, detected):
+    def get_uncer(self):
         """
-        Update AoI of one target.
-        Argument :
-            target_id (int) : target id
-            detected (bool) : is the target id=target_id detected
+        Get position and velocity uncertainties
+        Return 
+            u_pos : (float)[num_target] position uncertainties
+            u_vel : (float)[num_target] velocity uncertainties
         """
-        if detected:
-            self.aoi_list[target_id] = 0.0
-        else:
-            self.aoi_list[target_id] += self.dt
+        return self.u_pos, self.u_vel

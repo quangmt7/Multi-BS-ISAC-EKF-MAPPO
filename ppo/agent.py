@@ -119,7 +119,7 @@ class MAPPOAgent:
             if next_state_t.ndim == 1:
                 next_state_t = next_state_t.unsqueeze(0)
 
-            next_val = self.criticnetwork(next_state_t).squeeze().item()
+            next_val = self.criticnetwork(next_state_t).squeeze()
             rewards = buffer.rewards
             terminateds = buffer.terminateds
             truncateds = buffer.truncateds
@@ -168,8 +168,12 @@ class MAPPOAgent:
         b_advantages, b_returns = self.compute_gae(buffer, next_global_state)
         b_obs, b_states, b_act_prb, b_act_pwr, b_log_probs, _, _, _, b_values = buffer.get(self.device)        
         #normalization
-        b_advantages = (b_advantages -b_advantages.mean())/ (b_advantages.std() + 1e-8)
-        
+        std_adv = b_advantages.std()
+        if std_adv < 1e-8:
+            b_advantages = b_advantages - b_advantages.mean()
+        else:
+            b_advantages = (b_advantages - b_advantages.mean()) / (std_adv + 1e-8)
+
         #Flatten data : flat T and B 
         T,B =b_obs.shape[0], b_obs.shape[1]
         # [T,B,...] --> [T*B,...]
@@ -179,8 +183,6 @@ class MAPPOAgent:
         flat_logp = b_log_probs.reshape(-1)
         # 
         flat_adv = b_advantages.unsqueeze(1).repeat(1, B).reshape(-1)     
-        
-        
         
         # define statistical array
         pg_losses = []   # Policy Gradient Loss (L_clip)
@@ -219,9 +221,9 @@ class MAPPOAgent:
                 policy_loss = -torch.min(surr1, surr2).mean()
 
                 # entropy bonus
-                entropy_loss = -entropy.mean()
+                entropy_loss = entropy.mean()
                 # total actor loss
-                actor_loss = policy_loss + self.ent_coef * entropy_loss
+                actor_loss = policy_loss - self.ent_coef * entropy_loss
 
                 # Backward and optim
                 self.actor_optimizer.zero_grad()
@@ -230,7 +232,7 @@ class MAPPOAgent:
                 self.actor_optimizer.step()
 
                 pg_losses.append(policy_loss.item())
-                ent_losses.append(entropy.mean().item())
+                ent_losses.append(entropy_loss.item())
 
             # UPDATE CRITIC
             for start in range(0, T, self.batch_size):
@@ -242,7 +244,8 @@ class MAPPOAgent:
                 new_val = self.criticnetwork(mb_states).squeeze(-1)
 
                 # cal MSE loss
-                critic_loss = 0.5 * ((new_val - mb_returns) ** 2).mean()
+                value_loss = 0.5 * ((new_val - mb_returns) ** 2).mean()
+                critic_loss = self.vf_coef * value_loss
 
                 # backward and optim
                 self.critic_optimizer.zero_grad()

@@ -7,7 +7,6 @@ mappo_parameters:
     gae_lambda: 0.95                   # Hệ số GAE lambda = 0.95
     clip_epsilon: 0.2                  # Biên độ PPO clipping epsilon = 0.2
     ppo_epochs: 10                     # Số epoch tối ưu hóa trên buffer mỗi lần cập nhật
-    num_mini_batch: 4                  # Số mini-batch phân tách từ buffer (100 / 4 = 25)
     batch_size: 25                     # Kích thước mỗi mini-batch huấn luyện (100 slots / 4 = 25)
     entropy_coef: 0.01                 # Trọng số khuyến khích khám phá (Entropy bonus coefficient)
     value_loss_coef: 0.5               # Trọng số hàm mất mát của Critic (Value loss coefficient)
@@ -105,7 +104,9 @@ mappo_parameters:
     episode_length: 100                # T = 100 khe thời gian mỗi episode 
     rollout_threads: 1                 # Số môi trường song song (nếu dùng vector env)
     save_interval: 50                  # Lưu checkpoint sau mỗi 50 episode
-    eval_interval: 20                  # Đánh giá sau mỗi 20 episode
+    update_interval: 10                # Cứ mỗi bao nhiêu episode thì cập nhật
     log_interval: 10                   # Ghi log kết quả sau mỗi 10 episode
     device: "cpu"                      # Thiết bị huấn luyện ("cuda" hoặc "cpu")
     seed: 42                           # Random seed cố định để tái lập kết quả
+  # Bỏ eval_interval vì không cần thiết, khó đánh giá khi chạy ep dài nên không cần thiết, 
+  # có thể đánh giá qua biểu đồ cuối
