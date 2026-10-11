@@ -23,10 +23,10 @@ ekf_parameters:
   # Khởi tạo độ bất định ban đầu của mục tiêu sau bước beam-sweeping
  
   initial_covariance:
-    p_pos_init: 25.0                   # Phương sai ban đầu vị trí (m^2) — tương đương std = 5.0 m
+    p_pos_init: 4.0                   # Phương sai ban đầu vị trí (m^2) — tương đương std = 2.0 m
     p_vel_init: 4.0                    # Phương sai ban đầu vận tốc (m^2/s^2) — tương đương std = 2.0 m/s
     # Vector đường chéo cho ma trận P ban đầu P_m(0|0) (6x6)
-    p_diag_init: [25.0, 25.0, 25.0, 4.0, 4.0, 4.0]
+    p_diag_init: [4.0, 4.0, 4.0, 4.0, 4.0, 4.0]
 
   # ----------------------------------------------------------------------------
   # 4. Tham số sai số đo đạc phụ thuộc SINR 

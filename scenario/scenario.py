@@ -125,10 +125,18 @@ class Scenario:
 
         # 1. Quy mô hệ thống 
         self.B = int(sp.get("num_bs", 5))
-        self.K = int(sp.get("num_ue", 15))
-        self.M = int(sp.get("num_target", 15))
-        self.R = int(sp.get("num_prb", 300))
 
+# Số PRB của MỖI BS
+        self.R = int(sp.get("num_prb_bs", 51))
+
+
+        self.bw_bs_hz = float(
+        sp.get("bandwidth_per_bs_mhz", 20.0)
+        ) * 1e6
+
+        self.prb_bw_hz = float(
+    sp.get("prb_bandwidth_khz", 360)
+) * 1e3
         # 2. Cấu hình vô tuyến và OFDM 5G NR
         self.bw_hz     = float(sp.get("bandwidth_mhz", 100.0)) * 1e6
         self.fc_hz     = float(sp.get("carrier_frequency_ghz", 3.5)) * 1e9
@@ -140,7 +148,7 @@ class Scenario:
         if "max_tx_power_watt" in sp:
             self.p_max_w = float(sp["max_tx_power_watt"])
         else:
-            self.p_max_w = 10.0 ** (float(sp.get("max_tx_power_dbm", 33.0)) / 10.0) * 1e-3
+            self.p_max_w = 10.0 ** (float(sp.get("max_tx_power_dbm", 35.0)) / 10.0) * 1e-3
 
         # Công suất tạp âm nhiệt trên 1 PRB: sigma^2 = N_0 * NF * B_PRB 
         if "noise_power_per_prb_watt" in sp:
@@ -160,17 +168,17 @@ class Scenario:
         self.shadowing_std_db = float(ci.get("shadowing_std_db", 6.0))              # sigma_SF = 6.0 dB 
         self.rcs_sqm          = float(ci.get("target_rcs_sqm", 1.0))
 
-        # Đặc tính ăng-ten & Beamforming (PDF 1 Mục 2.4 & Mai Tiến Quang PT 9)
+        # Đặc tính ăng-ten & Beamforming 
         self.num_antennas_bs  = int(ci.get("num_antennas_bs", 64))                  # N_b = 64
-        # G_ant: Độ lợi của 1 phần tử antenna đơn lẻ (PDF 1 Mục 2.4.4 PT 54-55)
+        # G_ant: Độ lợi của 1 phần tử antenna đơn lẻ 
         self.g_ant_lin        = float(ci.get("antenna_element_gain_linear", 10.0 ** (float(ci.get("antenna_element_gain_dbi", 0.0)) / 10.0)))
         # G_b / G_max: Độ lợi phát cực đại của mảng antenna BS
         self.ant_gain_tx_lin  = float(ci.get("antenna_gain_tx_linear", 10.0 ** (float(ci.get("antenna_gain_tx_dbi", 15.0)) / 10.0)))
         self.ant_gain_rx_lin  = float(ci.get("antenna_gain_rx_linear", 10.0 ** (float(ci.get("antenna_gain_rx_dbi", 15.0)) / 10.0)))
         self.beam_pattern_q   = float(ci.get("beam_pattern_q", 2.0))                # q = 2.0 
         
-        # Độ lợi búp sóng phát cực đại G_max = G_b (15.0 dBi = 31.62) theo đúng PT (9) tài liệu Mai Tiến Quang
-        # hoặc G_max = N_b * G_ant theo PT (58) PDF 1 nếu cấu hình theo phần tử
+        # Độ lợi búp sóng phát cực đại G_max = G_b (15.0 dBi = 31.62)
+      
         if "antenna_gain_tx_linear" in ci or "antenna_gain_tx_dbi" in ci:
             self.g_max_lin = float(self.ant_gain_tx_lin) # G_max = G_b = 15.0 dBi (tuyến tính 31.62)
         else:
@@ -626,35 +634,53 @@ class Scenario:
         return rate_bps
 
     # =========================================================================
-    # Động học mục tiêu và Vector đo đạc EKF
-    # =========================================================================
+# Động học mục tiêu và Vector đo đạc EKF
+# =========================================================================
     def step_targets(self) -> None:
         """
-        Cập nhật trạng thái mục tiêu s_m(t+1) = F * s_m(t) + w_m(t) với w_m ~ N(0, Q_m).
-        Áp dụng phản xạ biên (boundary reflection) khi chạm giới hạn vùng mô phỏng.
-        """
-        w_m = self.rng.multivariate_normal(np.zeros(6), self.Q_m)
+    Cập nhật trạng thái từng mục tiêu:
+        s_m(t+1) = F @ s_m(t) + w_m(t)
+        w_m ~ N(0, Q_m)
 
+    Mỗi target có một mẫu nhiễu độc lập.
+    Áp dụng phản xạ biên khi chạm giới hạn vùng mô phỏng.
+    """
         for tgt in self.targets:
+        # Lấy mẫu nhiễu RIÊNG cho từng target
+            w_m = self.rng.multivariate_normal(
+             np.zeros(6),
+            self.Q_m
+        )
+
             new_state = self.F @ tgt.state + w_m
 
-            # Phản xạ biên X
+        # Phản xạ biên X
             if new_state[0] < 0.0 or new_state[0] > self.area_x:
                 new_state[3] = -new_state[3]
-                new_state[0] = np.clip(new_state[0], 0.0, self.area_x)
+                new_state[0] = np.clip(
+                    new_state[0], 0.0, self.area_x
+            )
 
-            # Phản xạ biên Y
+        # Phản xạ biên Y
             if new_state[1] < 0.0 or new_state[1] > self.area_y:
                 new_state[4] = -new_state[4]
-                new_state[1] = np.clip(new_state[1], 0.0, self.area_y)
+                new_state[1] = np.clip(
+                    new_state[1], 0.0, self.area_y
+            )
 
-            # Phản xạ biên Z
-            if new_state[2] < self.tgt_h_min or new_state[2] > self.tgt_h_max:
+        # Phản xạ biên Z
+            if (
+                new_state[2] < self.tgt_h_min
+            or new_state[2] > self.tgt_h_max
+        ):
                 new_state[5] = -new_state[5]
-                new_state[2] = np.clip(new_state[2], self.tgt_h_min, self.tgt_h_max)
+                new_state[2] = np.clip(
+                new_state[2],
+                self.tgt_h_min,
+                self.tgt_h_max
+            )
 
-            tgt.state = new_state
-
+        tgt.state = new_state
     def get_measurement_vectors(self) -> np.ndarray:
         """
         Tính vector đo đạc lý tưởng e_{b,m} = [r, theta, phi]^T :
@@ -872,6 +898,7 @@ class Scenario:
         """
         Thực hiện một time slot đầy đủ của kịch bản ISAC.
         """
+        
         # Cập nhật kênh truyền thông hiệu dụng với 3GPP Macro & Log-normal Shadowing
         self._update_channel_comm()
 
@@ -884,7 +911,10 @@ class Scenario:
         prob_success = self.compute_prob_success(prob_detect)
 
         # Tốc độ truyền thông UE (bps)
-        rate_bps = self.compute_comm_rate(alloc_matrix)
+        rate_bps = self.compute_comm_rate(
+        sinr_comm=self.sinr_comm,
+        alloc_matrix=alloc_matrix
+        )
 
         # Cập nhật Age of Information 
         aoi_new = self.update_aoi(prob_success, min_success_prob, reset_value=0)
