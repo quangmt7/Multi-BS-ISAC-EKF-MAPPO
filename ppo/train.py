@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-# Preserve direct invocation with ``python PPO/train.py``.
+# Preserve direct invocation with ``python ppo/train.py``.
 if __package__ in (None, ""):
     import sys
 
