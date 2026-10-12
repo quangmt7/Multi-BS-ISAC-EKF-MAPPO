@@ -13,6 +13,7 @@ if __package__ in (None, ""):
 
 from ppo.utils.mappo_trainer import MAPPOTrainer
 from ppo.utils.project_config import ProjectConfig
+from ppo.utils.result_artifacts import ResultArtifacts
 
 
 def parse_args() -> argparse.Namespace:
@@ -30,6 +31,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config-dir", type=Path, default=project_root / "config")
     parser.add_argument("--output-dir", type=Path, default=project_root / "results")
     parser.add_argument("--resume", type=Path, default=None)
+    parser.add_argument(
+        "--figures-only", action="store_true",
+        help="Generate figures from an existing metrics file without training again",
+    )
     return parser.parse_args()
 
 
@@ -44,6 +49,10 @@ def main() -> None:
     """
 
     args = parse_args()
+    if args.figures_only:
+        paths = ResultArtifacts(args.output_dir).render_existing()
+        print(f"Created {len(paths)} figures in {args.output_dir / 'figures'}")
+        return
     config = ProjectConfig.from_directory(args.config_dir).data
     trainer = MAPPOTrainer(
         config,

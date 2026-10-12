@@ -12,6 +12,7 @@ import torch
 
 from ppo.utils.checkpoint_manager import CheckpointManager
 from ppo.utils.project_config import ProjectConfig
+from ppo.utils.result_artifacts import ResultArtifacts
 from ppo.utils.runtime_contract import RuntimeContract
 
 
@@ -96,8 +97,10 @@ class MAPPOTrainer:
             self.contract.finite_agent_parameters(self.agent)
 
             self.output_dir.mkdir(parents=True, exist_ok=True)
-            metrics_path = self.output_dir / "metrics.jsonl"
+            artifacts = ResultArtifacts(self.output_dir)
+            metrics_path = artifacts.prepare_metrics(resume=self.resume_from is not None)
             checkpoint_dir = self.output_dir / "checkpoints"
+            checkpoint_dir.mkdir(parents=True, exist_ok=True)
             checkpoint_manager = CheckpointManager(self.config, self.agent)
 
             start_episode = 0
@@ -205,15 +208,17 @@ class MAPPOTrainer:
                             f"episode={episode + 1} steps={global_step} "
                             f"return={episode_return:.6f} length={steps_taken}"
                         )
-                    if (save_interval > 0 and should_update and
-                            ((episode + 1) % save_interval == 0 or
-                             episode + 1 == total_episodes)):
+                    if (should_update and
+                            ((save_interval > 0 and (episode + 1) % save_interval == 0)
+                             or episode + 1 == total_episodes)):
                         checkpoint_manager.save(
                             checkpoint_dir / f"episode_{episode + 1:06d}.pt",
                             episode,
                             global_step,
                         )
 
+            figure_paths = artifacts.render(metrics_path)
+            print(f"figures saved to {artifacts.figures_dir} ({len(figure_paths)} PNG files)")
             return history
         finally:
             if self._owns_environment and callable(getattr(self.env, "close", None)):
