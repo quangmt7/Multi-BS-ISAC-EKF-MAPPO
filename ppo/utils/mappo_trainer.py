@@ -111,6 +111,7 @@ class MAPPOTrainer:
 
             file_mode = checkpoint_manager.prepare_metrics(metrics_path, start_episode)
             history: list[dict[str, Any]] = []
+            buffer = self.buffer_factory()
 
             with metrics_path.open(file_mode, encoding="utf-8") as metrics_file:
                 for episode in range(start_episode, total_episodes):
@@ -125,7 +126,6 @@ class MAPPOTrainer:
                             f"received {reset_dims}"
                         )
 
-                    buffer = self.buffer_factory()
                     episode_return = 0.0
                     final_info: dict[str, Any] = {}
                     info_sums: dict[str, float] = {}
@@ -166,6 +166,7 @@ class MAPPOTrainer:
                             terminated,
                             truncated,
                             value,
+                            self.agent.estimate_value(next_global_state),
                         )
 
                         local_obs = next_local_obs
@@ -176,16 +177,13 @@ class MAPPOTrainer:
                         if terminated or truncated:
                             break
 
-                    if len(buffer) < 2:
-                        raise RuntimeError(
-                            "The current MAPPO agent requires at least two transitions "
-                            "to normalize advantages without producing NaN"
-                        )
-                    
-                    # We should not update policy too fast, let's try update after episodes
+                    # Keep on-policy transitions until the scheduled update.
                     numeric_metrics = {}
-                    if (update_interval != 0) and ((episode + 1) % update_interval == 0):
-                        update_metrics = self.agent.update(buffer, global_state)
+                    should_update = (update_interval > 0 and
+                                     ((episode + 1) % update_interval == 0 or
+                                      episode + 1 == total_episodes))
+                    if should_update and len(buffer) > 0:
+                        update_metrics = self.agent.update(buffer)
                         numeric_metrics = self._numeric_metrics(update_metrics)
                         self.contract.finite_agent_parameters(self.agent)
 
@@ -207,7 +205,9 @@ class MAPPOTrainer:
                             f"episode={episode + 1} steps={global_step} "
                             f"return={episode_return:.6f} length={steps_taken}"
                         )
-                    if save_interval > 0 and (episode + 1) % save_interval == 0:
+                    if (save_interval > 0 and should_update and
+                            ((episode + 1) % save_interval == 0 or
+                             episode + 1 == total_episodes)):
                         checkpoint_manager.save(
                             checkpoint_dir / f"episode_{episode + 1:06d}.pt",
                             episode,

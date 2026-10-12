@@ -11,20 +11,18 @@ def wrap_angle(angle):
 
     Parameters
     ----------
-    angle : float
-        Angle in radians.
+    angle : float or np.ndarray
+        Angle or angles in radians.
 
     Returns
     -------
-    float
-        Wrapped angle in (-pi, pi].
+    float or np.ndarray
+        Wrapped angle or angles in (-pi, pi].
     """
     wrapped_angle = (angle + np.pi) % (2 * np.pi) - np.pi
 
-    if np.isclose(wrapped_angle, -np.pi):
-        wrapped_angle = np.pi
-
-    return wrapped_angle
+    wrapped_angle = np.where(np.isclose(wrapped_angle, -np.pi), np.pi, wrapped_angle)
+    return float(wrapped_angle) if np.ndim(wrapped_angle) == 0 else wrapped_angle
 
 
 def get_activation(name):

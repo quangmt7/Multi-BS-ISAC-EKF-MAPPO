@@ -30,7 +30,7 @@ class RuntimeContract:
 
         system = config["system_parameters"]
         self.num_bs = int(system["num_bs"])
-        self.num_prb = int(system["num_prb"])
+        self.num_prb = int(system["num_prb_bs"])
         self.max_destination = int(system["num_target"] + system["num_ue"])
 
     def observation_dimensions(

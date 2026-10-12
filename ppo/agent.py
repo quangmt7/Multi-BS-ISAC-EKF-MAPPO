@@ -42,7 +42,7 @@ class MAPPOAgent:
         self.config = config
         # get system parameters
         sys_config= config.get("system_parameters")
-        self.n_prb= sys_config["num_prb"]
+        self.n_prb= sys_config["num_prb_bs"]
         self.num_targets= sys_config["num_target"]
         self.num_ues= sys_config["num_ue"]
         self.num_bs = sys_config["num_bs"]
@@ -64,8 +64,9 @@ class MAPPOAgent:
         self.device= torch.device("cuda" if (device_str =="cuda" and torch.cuda.is_available()) else "cpu")
         
         # actor, critic network and optimizers
-        self.actornetwork = Actor(local_obs_dim, self.n_prb, self.num_targets, self.num_ues).to(self.device)
-        self.criticnetwork= Critic(global_state_dim).to(self.device)
+        network_config = mappo_config["network"]
+        self.actornetwork = Actor(local_obs_dim, self.n_prb, self.num_targets, self.num_ues, network_config["actor"]).to(self.device)
+        self.criticnetwork= Critic(global_state_dim, network_config["critic"]).to(self.device)
         self.actor_optimizer= torch.optim.Adam(self.actornetwork.parameters(), lr= ppo_config.get("lr_actor"))
         self.critic_optimizer= torch.optim.Adam(self.criticnetwork.parameters(), lr= ppo_config.get("lr_critic"))
     
@@ -102,35 +103,30 @@ class MAPPOAgent:
                 val.squeeze().item()
             )
 
-    def compute_gae(self, buffer, next_global_state):
+    def compute_gae(self, buffer):
         """
         Compute Generalized Advantage Estimation (GAE) and discounted return targets backwards across rollout steps.
 
         Argument:
             buffer (MultiAgentRolloutBuffer): Rollout buffer holding T timesteps of multi-agent interactions.
-            next_global_state (np.ndarray)[global_state_dim]: Global state of the timestep following the rollout (S_T).
 
         Return:
             advantages_t (torch.Tensor)[T]: Computed Generalized Advantage Estimations.
             returns_t (torch.Tensor)[T]: Discounted target returns for Critic training.
         """
         with torch.no_grad():
-            next_state_t = torch.as_tensor(next_global_state, dtype=torch.float32, device=self.device)
-            if next_state_t.ndim == 1:
-                next_state_t = next_state_t.unsqueeze(0)
-
-            next_val = self.criticnetwork(next_state_t).squeeze()
             rewards = buffer.rewards
             terminateds = buffer.terminateds
             truncateds = buffer.truncateds
             values = buffer.values
+            next_values = buffer.next_values
             T = len(rewards)
 
             advantages = [0.0] * T
             last_gaelam = 0.0
 
             for t in reversed(range(T)):
-                next_val_step = next_val if (t == T - 1) else values[t + 1]
+                next_val_step = next_values[t]
                 next_nonterminal = 1.0 - float(terminateds[t])
                 next_done = float(terminateds[t] or truncateds[t])
 
@@ -146,14 +142,26 @@ class MAPPOAgent:
             returns_t = torch.tensor(returns, dtype=torch.float32, device=self.device)
 
             return advantages_t, returns_t
+
+    def estimate_value(self, global_state):
+        """Estimate the critic value of one global state.
+
+        Argument:
+            (global_state) (np.ndarray)[global_state_dim]: State after a transition.
+
+        Return:
+            (value) (float): Estimated state value.
+        """
+        with torch.no_grad():
+            state = torch.as_tensor(global_state, dtype=torch.float32, device=self.device)
+            return float(self.criticnetwork(state.unsqueeze(0)).item())
         
-    def update(self, buffer, next_global_state):
+    def update(self, buffer):
         """
         Update Actor and Centralized Critic networks using PPO clipped loss over multiple epochs.
 
         Argument:
             buffer (MultiAgentRolloutBuffer): Buffer containing on-policy rollout transitions.
-            next_global_state (np.ndarray)[global_state_dim]: Global state after rollout horizon.
 
         Return:
             metrics (dict): Dictionary containing average training losses:
@@ -165,10 +173,10 @@ class MAPPOAgent:
             Parameter Sharing flattens Actor samples into (T * B), whereas Centralized Critic trains on T global states.
         """
         
-        b_advantages, b_returns = self.compute_gae(buffer, next_global_state)
+        b_advantages, b_returns = self.compute_gae(buffer)
         b_obs, b_states, b_act_prb, b_act_pwr, b_log_probs, _, _, _, b_values = buffer.get(self.device)        
         #normalization
-        std_adv = b_advantages.std()
+        std_adv = b_advantages.std(unbiased=False)
         if std_adv < 1e-8:
             b_advantages = b_advantages - b_advantages.mean()
         else:

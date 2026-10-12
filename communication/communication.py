@@ -19,7 +19,7 @@ class CommunicationManager:
         self.num_bs = sys_config["num_bs"]
         self.num_ues = sys_config["num_ue"]
         self.num_targets = sys_config["num_target"]
-        self.n_prb = sys_config["num_prb"]
+        self.n_prb = sys_config["num_prb_bs"]
 
         self.B_prb = sys_config["prb_bandwidth_khz"] * 1e3
         self.R_min = req_config["min_ue_rate_mbps"] * 1e6

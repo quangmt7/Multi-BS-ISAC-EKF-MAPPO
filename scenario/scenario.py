@@ -125,20 +125,22 @@ class Scenario:
 
         # 1. Quy mô hệ thống 
         self.B = int(sp.get("num_bs", 5))
+        self.K = int(sp["num_ue"])
+        self.M = int(sp["num_target"])
 
 # Số PRB của MỖI BS
         self.R = int(sp.get("num_prb_bs", 51))
 
 
         self.bw_bs_hz = float(
-        sp.get("bandwidth_per_bs_mhz", 20.0)
+        sp.get("bandwidth_mhz_bs", 20.0)
         ) * 1e6
 
         self.prb_bw_hz = float(
     sp.get("prb_bandwidth_khz", 360)
 ) * 1e3
         # 2. Cấu hình vô tuyến và OFDM 5G NR
-        self.bw_hz     = float(sp.get("bandwidth_mhz", 100.0)) * 1e6
+        self.bw_hz     = self.bw_bs_hz
         self.fc_hz     = float(sp.get("carrier_frequency_ghz", 3.5)) * 1e9
         self.prb_bw_hz = float(sp.get("prb_bandwidth_khz", 360.0)) * 1e3
         self.dt        = float(sp.get("slot_duration_ms", 10.0)) * 1e-3

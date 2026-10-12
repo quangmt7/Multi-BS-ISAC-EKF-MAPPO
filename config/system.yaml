@@ -13,7 +13,7 @@ system_parameters:
   # Băng tần 5G NR FR1 (Sub-6 GHz, ví dụ băng n78 3.5 GHz)
   # SCS = 30 kHz (Numerology mu = 1), 1 PRB = 12 subcarriers * 30 kHz = 360 kHz
   # ----------------------------------------------------------------------------
-  bandwidth_mhz_bs: 20.0                 # Tổng băng thông hệ thống: 100.0 MHz
+  bandwidth_mhz_bs: 20.0                 # Băng thông mỗi BS: 20.0 MHz
   carrier_frequency_ghz: 3.5           # Tần số sóng mang trung tâm f_c = 3.5 GHz
   subcarrier_spacing_khz: 30.0         # Khoảng cách sóng mang con (SCS) = 30.0 kHz
   prb_bandwidth_khz: 360.0             # Băng thông 1 PRB: B_0 = B_PRB = 360.0 kHz
@@ -37,7 +37,7 @@ system_parameters:
   channel_and_interference:
     # --- Mô hình suy hao 3GPP & Radar ---
     pathloss_model: "3gpp_macro"       # Mô hình suy hao đường truyền 3GPP chuẩn
-    pathloss_const_db: 128.1           # Hằng số suy hao đường truyền tại mức tham chiếu 1 m (dB)
+    pathloss_const_db: 128.1           # Hằng số trong PL = 128.1 + 37.6 log10(d_km) (dB)
     pathloss_exponent_comm: 37.6       # Hệ số suy hao: 37.6 * log10(d_km) (tương ứng alpha_c = 3.76)
     pathloss_exponent_sensing: 2.0     # Số mũ suy hao 1 chiều radar: alpha_s = 2.0 (suy hao 2 chiều ~ d^4)
     shadowing_std_db: 6.0              # sigma_SF: Độ lệch chuẩn suy hao che khuất Log-normal (dB)

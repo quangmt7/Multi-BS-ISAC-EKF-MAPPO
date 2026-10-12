@@ -28,19 +28,22 @@ class Actor(nn.Module):
         super().__init__()
         self.n_prb = n_prb
         self.num_choices = 1 + num_targets + num_ues #number of choice for each prb
-        self.hiddens_dim = net_conf["hiddens_dim"] 
+        self.hiddens_dim = net_conf["hidden_dims"]
         # Use a common function to build the backbone
         self.backbone, self.out_gain = build_mlp(input_dim=local_obs_dim,
-                                                output_dim=net_conf["hiddens_dim"][1],
-                                                hiddens_dim=net_conf["hiddens_dim"],
+                                                hiddens_dim=net_conf["hidden_dims"],
                                                 activation=net_conf["activation"],
                                                 use_layer_norm=net_conf["use_layer_norm"],
                                                 orthogonal_init=net_conf["orthogonal_init"],
                                                 gain=net_conf["gain"],
                                                 isActor=True)
         
-        self.prb_head = nn.Linear(net_conf["hiddens_dim"][1], self.n_prb * self.num_choices) # sum of prb choice 
-        self.power_mean = nn.Linear(net_conf["hiddens_dim"][1], self.n_prb) # n numbers of power allocation for n prb
+        self.prb_head = nn.Linear(net_conf["hidden_dims"][1], self.n_prb * self.num_choices) # sum of prb choice
+        self.power_mean = nn.Linear(net_conf["hidden_dims"][1], self.n_prb) # n numbers of power allocation for n prb
+        if net_conf["orthogonal_init"]:
+            for head in (self.prb_head, self.power_mean):
+                nn.init.orthogonal_(head.weight, gain=self.out_gain)
+                nn.init.zeros_(head.bias)
         # Khởi tạo logstd = -1.0 (std = exp(-1.0) ≈ 0.36) giúp độ tản ban đầu vừa vặn với miền [0, 1]
         self.power_logstd = nn.Parameter(torch.full((1, self.n_prb), -1.0))
          
@@ -123,13 +126,16 @@ class Critic(nn.Module):
         """
         super().__init__()
         self.backbone, self.out_gain = build_mlp(input_dim=global_state_dim,
-                        output_dim=1,
-                        hiddens_dim=net_conf["hiddens_dim"],
+                        hiddens_dim=net_conf["hidden_dims"],
                         activation=net_conf["activation"],
                         use_layer_norm=net_conf["use_layer_norm"],
                         orthogonal_init=net_conf["orthogonal_init"],
                         gain=net_conf["gain"],
                         isActor=False)
+        self.value_head = nn.Linear(net_conf["hidden_dims"][-1], 1)
+        if net_conf["orthogonal_init"]:
+            nn.init.orthogonal_(self.value_head.weight, gain=self.out_gain)
+            nn.init.zeros_(self.value_head.bias)
     
     def forward(self, global_state):
         """
@@ -141,7 +147,7 @@ class Critic(nn.Module):
         Return:
             value (torch.Tensor)[batch, 1]: Estimated scalar state-value V(S).
         """
-        return self.backbone(global_state)
+        return self.value_head(self.backbone(global_state))
 
 
 class MultiAgentRolloutBuffer:
@@ -171,8 +177,9 @@ class MultiAgentRolloutBuffer:
         self.terminateds = []
         self.truncateds = []
         self.values = []
+        self.next_values = []
 
-    def push(self, local_obs, global_state, act_prb, act_pwr, logp, reward, terminated, truncated, value):
+    def push(self, local_obs, global_state, act_prb, act_pwr, logp, reward, terminated, truncated, value, next_value):
         """
         Append a single-step multi-agent transition into the buffer.
 
@@ -186,6 +193,7 @@ class MultiAgentRolloutBuffer:
             terminated (bool or float): Terminal failure flag (e.g. lost target).
             truncated (bool or float): Timeout truncation flag (e.g. max steps reached).
             value (float): State-value V(S) predicted by the Centralized Critic.
+            next_value (float): State-value of the state reached by this transition.
 
         Return:
             None.
@@ -199,6 +207,7 @@ class MultiAgentRolloutBuffer:
         self.terminateds.append(terminated)
         self.truncateds.append(truncated)
         self.values.append(value)
+        self.next_values.append(next_value)
 
     def clear(self):
         """
@@ -219,6 +228,7 @@ class MultiAgentRolloutBuffer:
         self.terminateds.clear()
         self.truncateds.clear()
         self.values.clear()
+        self.next_values.clear()
 
     def get(self, device="cpu"):
         """

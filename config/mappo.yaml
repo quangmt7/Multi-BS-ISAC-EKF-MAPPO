@@ -59,8 +59,8 @@ mappo_parameters:
   # ----------------------------------------------------------------------------
   normalization:
     a_max: 20.0                        # A_max: Ngưỡng chuẩn hóa cực đại AoI (khe thời gian)
-    u_pos_max: 20.0                    # U^{pos}_{max}: Ngưỡng chuẩn hóa bất định vị trí 
-    u_vel_max: 10.0                    # U^{vel}_{max}: Ngưỡng chuẩn hóa bất định vận tốc 
+    u_pos_max: 100.0                   # Đồng bộ ngưỡng bất định vị trí trong ekf.yaml
+    u_vel_max: 100.0                   # Đồng bộ ngưỡng bất định vận tốc trong ekf.yaml
     p_max_watt: 2.0                    # P_max: Công suất chuẩn hóa = 2.0 W
 
 

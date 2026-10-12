@@ -21,10 +21,10 @@ class BSMeasurement:
 
         self.bs_id = bs_id
         self.state_dim = ekf_config["state_dim"]
-        self.measurement_dim = ekf_config["state_dim"]
+        self.measurement_dim = ekf_config["measurement_dim"]
         self.bs_position = bs_position
 
-        self.gamma_0 = ekf_config["measurement_noise"]["gamma_0_linear"]
+        self.gamma_ref = float(ekf_config["measurement_noise"]["gamma_0_linear"])
 
         self.sigma_r_0 = ekf_config["measurement_noise"]["sigma_range_0"]
         self.sigma_theta_0 = ekf_config["measurement_noise"]["sigma_azimuth_0_rad"]
@@ -32,6 +32,9 @@ class BSMeasurement:
 
         self.ap_theta_ratio = ekf_config["measurement_noise"]["aperture"]["d_ap_theta_ratio"]
         self.ap_phi_ratio = ekf_config["measurement_noise"]["aperture"]["d_ap_phi_ratio"] 
+        noise_config = ekf_config["measurement_noise"]
+        self.range_variance_bounds = (noise_config["min_range_variance"], noise_config["max_range_variance"])
+        self.angle_variance_bounds = (noise_config["min_angle_variance"], noise_config["max_angle_variance"])
 
     def measurement_function(self, target_state):
         """
@@ -65,16 +68,16 @@ class BSMeasurement:
         Return :
             R covariance (np.diag[3][3]) : covariance of the measurement.
         """
-        if (sensing_sinr == 0):
-            return ValueError(sensing_sinr)
+        if not np.isfinite(sensing_sinr) or sensing_sinr <= 0:
+            raise ValueError("sensing_sinr must be finite and positive to generate a measurement")
         else :
             sinr_ratio = self.gamma_ref / sensing_sinr
 
-            sigma_r_sq = (self.sigma_r_0 ** 2 * sinr_ratio)
+            sigma_r_sq = np.clip(self.sigma_r_0 ** 2 * sinr_ratio, *self.range_variance_bounds)
 
-            sigma_theta_sq = (self.sigma_theta_0 ** 2 * (sinr_ratio / self.ap_theta_ratio ** 2))
+            sigma_theta_sq = np.clip(self.sigma_theta_0 ** 2 * (sinr_ratio / self.ap_theta_ratio ** 2), *self.angle_variance_bounds)
 
-            sigma_phi_sq = (self.sigma_phi_0 ** 2 * (sinr_ratio / self.ap_phi_ratio ** 2))
+            sigma_phi_sq = np.clip(self.sigma_phi_0 ** 2 * (sinr_ratio / self.ap_phi_ratio ** 2), *self.angle_variance_bounds)
 
             return np.diag([sigma_r_sq, sigma_theta_sq, sigma_phi_sq])
     
@@ -101,5 +104,3 @@ class BSMeasurement:
         measurement[2] = wrap_angle(measurement[2])
 
         return measurement, R
-    
-        

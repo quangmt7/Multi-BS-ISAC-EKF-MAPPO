@@ -23,7 +23,7 @@ class ProjectConfig:
         the same top-level section.
     """
 
-    FILE_NAMES = ("system.yaml", "efk.yaml", "mappo.yaml")
+    FILE_NAMES = ("system.yaml", "ekf.yaml", "mappo.yaml")
 
     def __init__(self, data: Mapping[str, Any]):
         """Store a configuration mapping.
@@ -87,7 +87,7 @@ class ProjectConfig:
                 raise ValueError(f"Missing or invalid config section: {section}")
 
         system = self.data["system_parameters"]
-        for name in ("num_bs", "num_ue", "num_target", "num_prb"):
+        for name in ("num_bs", "num_ue", "num_target", "num_prb_bs"):
             value = system.get(name)
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
                 raise ValueError(f"system_parameters.{name} must be a positive integer")
@@ -105,11 +105,9 @@ class ProjectConfig:
                 raise ValueError(
                     f"mappo_parameters.training.{name} must be a positive integer"
                 )
-        if training["episode_length"] < 2:
-            raise ValueError(
-                "mappo_parameters.training.episode_length must be at least 2 because "
-                "the current agent normalizes rollout advantages"
-            )
+        update_interval = training.get("update_interval", 1)
+        if isinstance(update_interval, bool) or not isinstance(update_interval, int) or update_interval <= 0:
+            raise ValueError("mappo_parameters.training.update_interval must be a positive integer")
 
         for name in ("save_interval", "eval_interval"):
             value = training.get(name, 0)

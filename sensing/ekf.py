@@ -1,4 +1,5 @@
 import numpy as np
+from comUtils.common import wrap_angle
 
 class EKF:
     """
@@ -33,8 +34,8 @@ class EKF:
             self.p_diag_init.copy()
             for _ in range(self.num_target)
         ]
-        self.u_pos = np.zeros(self.num_target)
-        self.u_vel = np.zeros(self.num_target)
+        self.u_pos = np.full(self.num_target, np.trace(self.p_diag_init[:3, :3]))
+        self.u_vel = np.full(self.num_target, np.trace(self.p_diag_init[3:, 3:]))
 
         self.F = np.array([
             [1, 0, 0, dt, 0, 0],
@@ -58,6 +59,8 @@ class EKF:
 
         self.state_list[target_id] = predicted_state
         self.covariance_list[target_id] = predicted_covariance
+        self.u_pos[target_id] = np.trace(predicted_covariance[:3, :3])
+        self.u_vel[target_id] = np.trace(predicted_covariance[3:, 3:])
 
     def ideal_measurement_function(self, state, bs_position):
         """
@@ -181,7 +184,9 @@ class EKF:
             R_batch[start:end, start:end] = R
 
         # Innovation
-        innovation = (measurement_batch - predicted_measurement_batch)
+        innovation = measurement_batch - predicted_measurement_batch
+        innovation[1::self.measurement_dim] = wrap_angle(innovation[1::self.measurement_dim])
+        innovation[2::self.measurement_dim] = wrap_angle(innovation[2::self.measurement_dim])
 
         # Innovation covariance
         S = (H_batch @ covariance @ H_batch.T + R_batch)
@@ -195,7 +200,9 @@ class EKF:
         # Covariance update
         I = np.eye(6)
 
-        updated_covariance = (I - K @ H_batch) @ covariance
+        residual_operator = I - K @ H_batch
+        updated_covariance = (residual_operator @ covariance @ residual_operator.T
+                              + K @ R_batch @ K.T)
 
         self.state_list[target_id] = updated_state
         self.covariance_list[target_id] = updated_covariance

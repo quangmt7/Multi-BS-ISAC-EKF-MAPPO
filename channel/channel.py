@@ -11,8 +11,8 @@ class WirelessChannel:
          self.num_bs = sys_config["num_bs"]
          self.num_ues = sys_config["num_ue"]
          self.num_targets = sys_config["num_target"]
-         self.n_prb = sys_config["num_prb"]
-         self.shadowing = sys_config["shadowing_std_db"]
+         self.n_prb = sys_config["num_prb_bs"]
+         self.shadowing = float(channel_config["shadowing_std_db"])
          
          self.carrier_freq = float(sys_config["carrier_frequency_ghz"]) * 1e9
          self.c = 3e8
@@ -22,14 +22,18 @@ class WirelessChannel:
          self.noise_power = float(sys_config["noise_power_per_prb_watt"])
          
          self.rcs = float(channel_config["target_rcs_sqm"])
+         if not np.isfinite(self.rcs) or self.rcs < 0:
+             raise ValueError("target_rcs_sqm must be finite and non-negative")
          self.alpha_c = float(channel_config["pathloss_exponent_comm"])
          self.alpha_s = float(channel_config["pathloss_exponent_sensing"])
+         if not np.isclose(self.alpha_s, 2.0):
+             raise ValueError("monostatic echo gain requires pathloss_exponent_sensing = 2")
          self.g_tx = float(channel_config["antenna_gain_tx_linear"])
          self.g_rx = float(channel_config["antenna_gain_rx_linear"])
          self.beam_q= float(channel_config["beam_pattern_q"])
         # beamforming
          self.g_max = self.g_tx
-         self.g_ant = float(channel_config["antenna_gain_rx_linear"])
+         self.g_ant = float(sys_config["ue_parameters"]["antenna_gain_rx_linear"])
 
   
          
@@ -40,7 +44,7 @@ class WirelessChannel:
 
         # Reference path loss at 1m: beta0 = (lambda / (4 * pi * 1))^2
         # This should be taken through config file
-         self.beta0 = float(channel_config["pathloss_const_db"])
+         self.pathloss_const_db = float(channel_config["pathloss_const_db"])
 
         # Precompute C2S PRB distance leakage matrix eta_{r, r'} (R, R)
          prb_indices = np.arange(self.n_prb)
@@ -127,9 +131,8 @@ class WirelessChannel:
         dist = np.maximum(dist,  1.0)
         
         # 1.Pathloss, shadowing
-        pl_d0 = -10.0 * np.log10(self.beta0)
         X_sigma = self.rng.normal(0.0, self.shadowing, size=(self.num_bs, self.num_ues))  # (B, K)
-        pl_db = pl_d0 + 10.0 * self.alpha_c * np.log10(dist) + X_sigma              # Eq. (68)
+        pl_db = self.pathloss_const_db + self.alpha_c * np.log10(dist / 1000.0) + X_sigma
         G_path = 10.0 ** (-pl_db / 10.0)                                             # Eq. (69)
         
         # 2. get beam gain
@@ -161,12 +164,11 @@ class WirelessChannel:
         dist = np.sqrt(np.sum(diff ** 2, axis=-1))  # (B, M)
         dist = np.maximum(dist, 1.0)
 
-        # 1.Pathloss, shadowing
-        pl_d0 = -10.0 * np.log10(self.beta0)
-        sigma_sf = 8.0
-        X_sigma = self.rng.normal(0.0, sigma_sf, size=(self.num_bs, self.num_targets))  # (B, M)
-        pl_db = pl_d0 + 10.0 * self.alpha_s * np.log10(dist) + X_sigma                
-        G_path = (10.0 ** (-pl_db / 10.0)) 
+        # Monostatic radar echo power gain, including the target cross section.
+        X_sigma = self.rng.normal(0.0, self.shadowing, size=(self.num_bs, self.num_targets))
+        G_path = (self.wavelength ** 2 * self.rcs
+                  / ((4.0 * np.pi) ** 3 * dist ** 4)
+                  * 10.0 ** (-X_sigma / 10.0))
         # 2. get beam gain
         beam_gain = self.compute_sensing_beamforming_gain(bs_pos, target_pos, pred_target_pos)
         # 3.small scale fading
@@ -176,23 +178,23 @@ class WirelessChannel:
         # 6. calculate sensing gain
         sensing_gain = (
             G_path[:, :, np.newaxis]
-            * self.g_ant
+            * self.g_rx
             * beam_gain[:, :, np.newaxis]
             * G_fading
         )
         return sensing_gain.astype(np.float32)
 
  
-    def compute_c2s_interference(self, P_c: np.ndarray, comm_gain: np.ndarray) -> np.ndarray:
+    def compute_c2s_interference(self, P_c: np.ndarray) -> np.ndarray:
         """
         Compute Communication-to-Sensing (C2S) leakage interference 
         Return:
             c2s_interf (np.ndarray)[B, 1, R]: Leakage power per PRB r at BS b.
         """
-        if P_c is None or comm_gain is None:
+        if P_c is None:
          return 0.0
         # total communication power per each PRB r' of base station b: (B, R)
-        comm_power = np.sum(P_c * comm_gain, axis=1)
+        comm_power = np.sum(P_c, axis=1)
         c2s_interf = np.dot(comm_power, self.c2s_matrix)[:, np.newaxis, :]
         return c2s_interf 
  
@@ -225,7 +227,6 @@ class WirelessChannel:
         target_pos: np.ndarray,
         pred_target_pos: np.ndarray = None,
         P_c: np.ndarray = None,
-        comm_gain: np.ndarray = None,
     ) -> tuple:
 
         """
@@ -237,7 +238,6 @@ class WirelessChannel:
             target_pos (numpy.ndarray)[M, 3]: True 3D positions of targets [x, y, z] in meters.
             pred_target_pos (numpy.ndarray )[M, 3]: Predicted 3D target positions from EKF for beam steering.
             P_c (numpy.ndarray )[B, K, R]: Communication transmit power matrix for C2S leakage calculation.
-            comm_gain (numpy.ndarray )[B, K, R]: Effective communication channel gain matrix for C2S leakage.
         Return:
             effective_sensing_sinr (numpy.ndarray)[B, M]: Accumulated effective sensing SINR Gamma_{b,m}^s across PRBs.
             sensing_sinr_prb (numpy.ndarray)[B, M, R]: Instantaneous radar sensing SINR per PRB gamma_{b,m,r}^s.
@@ -248,7 +248,7 @@ class WirelessChannel:
         sensing_gain = self.get_sensing_channel_gain(bs_pos, target_pos, pred_target_pos)
         signal_sensing = P_s * sensing_gain  # (B, M, R)
 
-        c2s_interf = self.compute_c2s_interference(P_c, comm_gain)  
+        c2s_interf = self.compute_c2s_interference(P_c)
         ibi_interf = self.compute_ibi_interference(X_s, P_s)    
         total_interf = self.noise_power + c2s_interf + ibi_interf
         sensing_sinr_prb = np.where(
@@ -287,7 +287,6 @@ class WirelessChannel:
             target_pos=target_pos,
             pred_target_pos=pred_target_pos,
             P_c=P_c,
-            comm_gain=comm_gain
         )
 
         return {
