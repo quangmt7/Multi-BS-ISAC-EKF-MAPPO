@@ -1,5 +1,6 @@
 import numpy as np
 from comUtils.common import wrap_angle
+import math
 
 class EKF:
     """
@@ -12,9 +13,11 @@ class EKF:
         process_noise : all noise matrix, include all noise for six components
         initial_states : initial states for all target
         initial_covariances : initial covariances for all target
+        sepBS : (bool) indicates if this EKF is used in common or separate BS
+            True -> separate BS, False -> common 
     """
     def __init__(self, state_dim, measurement_dim, num_target, dt, process_noise, 
-                 initial_states, initial_covariances):
+                 initial_states, initial_covariances, sepBS):
         self.state_dim = state_dim
         self.measurement_dim = measurement_dim
         self.num_target = num_target
@@ -23,17 +26,17 @@ class EKF:
         self.q_diag = np.diag(process_noise["q_diag"])
         self.p_diag_init = np.diag(initial_covariances["p_diag_init"])
 
-        # Initial state estimate for each target
+        # Initial state estimate for each target, also state storage
         self.state_list = [
             np.asarray(state, dtype=float).copy()
             for state in initial_states
         ]
-
         # Each target has its own covariance matrix
         self.covariance_list = [
             self.p_diag_init.copy()
             for _ in range(self.num_target)
         ]
+
         self.u_pos = np.full(self.num_target, np.trace(self.p_diag_init[:3, :3]))
         self.u_vel = np.full(self.num_target, np.trace(self.p_diag_init[3:, 3:]))
 
@@ -219,3 +222,23 @@ class EKF:
             u_vel : (float)[num_target] velocity uncertainties
         """
         return self.u_pos, self.u_vel
+
+    def cal_rmse(self, true_pos):
+        """
+        Calculate the RMSE of each state's position
+        Parameter
+            true_pos : (float)[num_target, 3] a targets' true position
+        Return
+            rmse : RMSE of all targets
+        """
+        rmse = 0
+        for i in range(len(self.num_target)):
+            rmse_tar = 0
+            for k in range(len(self.state_list[i])):
+                rmse_tar += (self.state_list[i][k] - true_pos[i][k])
+            rmse+=rmse_tar
+        rmse = math.sqrt(rmse / self.num_target)
+        return rmse
+            
+
+

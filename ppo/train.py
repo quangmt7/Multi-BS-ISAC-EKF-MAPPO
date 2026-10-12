@@ -11,10 +11,6 @@ if __package__ in (None, ""):
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from ppo.utils.mappo_trainer import MAPPOTrainer
-from ppo.utils.project_config import ProjectConfig
-from ppo.utils.result_artifacts import ResultArtifacts
-
 
 def parse_args() -> argparse.Namespace:
     """Parse command-line arguments for MAPPO training.
@@ -38,29 +34,3 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def main() -> None:
-    """Load configuration and start MAPPO training.
-
-    Argument:
-        (None).
-
-    Return:
-        (None).
-    """
-
-    args = parse_args()
-    if args.figures_only:
-        paths = ResultArtifacts(args.output_dir).render_existing()
-        print(f"Created {len(paths)} figures in {args.output_dir / 'figures'}")
-        return
-    config = ProjectConfig.from_directory(args.config_dir).data
-    trainer = MAPPOTrainer(
-        config,
-        output_dir=args.output_dir,
-        resume_from=args.resume,
-    )
-    trainer.run()
-
-
-if __name__ == "__main__":
-    main()

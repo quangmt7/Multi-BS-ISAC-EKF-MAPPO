@@ -78,7 +78,8 @@ class MultiISACEnv:
             CommunicationManager(self.config, bs_id=b) for b in range(self.num_bs)
         ]
         self.ekf_config = ekf_config
-        self.ekf = None
+        # For common EKF
+        self.ekf_common = None
         self.detection_list = [Detection(self.p_fa) for _ in range(self.num_bs)]
         self.measurement_list = []
         
@@ -112,17 +113,6 @@ class MultiISACEnv:
         self.ue_positions = scen_data["ue_positions"]
         self.target_states = scen_data["target_states"]
 
-        self.measurement_list = [
-            BSMeasurement(b, self.ekf_config, self.bs_positions[b])
-            for b in range(self.num_bs)
-        ]
-        self.ekf = EKF(
-            self.ekf_config["state_dim"], self.ekf_config["measurement_dim"],
-            self.num_targets, self.ekf_config["dt"],
-            self.ekf_config["process_noise"], self.target_states,
-            self.ekf_config["initial_covariance"],
-        )
-
         self.pred_target_states = self.target_states.copy()
 
         # Initialize residual resources and channel state metrics
@@ -131,6 +121,17 @@ class MultiISACEnv:
         self.last_h_comm = np.zeros((self.num_bs, self.num_ues), dtype=np.float32)
         self.last_h_sens = np.zeros((self.num_bs, self.num_targets), dtype=np.float32)
         
+        self.measurement_list = [
+            BSMeasurement(b, self.ekf_config, self.bs_positions[b])
+            for b in range(self.num_bs)
+        ]
+        self.ekf_common = EKF(
+            self.ekf_config["state_dim"], self.ekf_config["measurement_dim"],
+            self.num_targets, self.ekf_config["dt"],
+            self.ekf_config["process_noise"], self.target_states,
+            self.ekf_config["initial_covariance"], False
+        )
+
         local_obs_list = self._get_local_observations()
         global_state = self._get_global_state()
         # Reset the prob and detect_mask
@@ -228,25 +229,31 @@ class MultiISACEnv:
         u_vel = np.asarray(u_vel, dtype=np.float32)
         p_suc = np.asarray(p_suc, dtype=np.float32)
         user_rates = np.asarray(user_rates, dtype=np.float32)
+        user_rates_mbps = user_rates / 1e6
 
         # 1. Primary objective R_obj
         norm_aoi = float(np.mean(self.aoi)) / self.a_max
         norm_uncertainty = (float(np.mean(u_pos)) / self.u_pos_max) + (float(np.mean(u_vel)) / self.u_vel_max)
         norm_power = float(np.sum(P_s) + np.sum(P_c)) / (self.num_bs * self.p_max)
-        r_obj = - (self.alpha * norm_aoi + self.beta * norm_uncertainty + self.gamma * norm_power)
-
+        norm_ue = 0
+        for i in range(len(user_rates_mbps)):
+            if user_rates_mbps[i] > self.r_min:
+                norm_ue += 1
+        norm_ue /= self.num_ues
+        
         # 2. Normalized shortfall penalty components: c_i * (1 - x_i)
-        user_rates_mbps = user_rates / 1e6
-        x1_qos = float(np.mean(np.clip( self.r_min - user_rates_mbps / self.r_min, 0.0, 1.0)))
-        x2_sens = float(np.mean(np.clip(self.p_min_sensing - p_suc / self.p_min_sensing, 0.0, 1.0)))
-        x3_upos = float(np.mean(np.clip(u_pos - self.u_pos_max / self.u_pos_max, 0.0, 1.0)))
-        x4_uvel = float(np.mean(np.clip( u_vel - self.u_vel_max / self.u_vel_max, 0.0, 1.0)))
+        x1_qos = float(np.mean(self.r_min - user_rates_mbps / self.r_min))
+        x2_sens = float(np.mean(self.p_min_sensing - p_suc / self.p_min_sensing))
+        x3_upos = float(np.mean(u_pos - self.u_pos_max / self.u_pos_max))
+        x4_uvel = float(np.mean(u_vel - self.u_vel_max / self.u_vel_max))
 
         pen_qos = self.c1 * (1.0 - x1_qos)
         pen_sensing = self.c2 * (1.0 - x2_sens)
         pen_upos = self.c3 * (1.0 - x3_upos)
         pen_uvel = self.c4 * (1.0 - x4_uvel)
 
+        r_obj = - (self.alpha * norm_aoi + self.beta * norm_uncertainty + self.gamma * norm_power) + \
+                (1 - self.alpha - self.beta - self.gamma) * norm_ue
         r_penalty = pen_qos + pen_sensing + pen_upos + pen_uvel
         reward = float(r_obj + r_penalty)
 
@@ -291,8 +298,8 @@ class MultiISACEnv:
     
         # 2. EKF predict (predict next target states for beamforming direction)
         for m in range(self.num_targets):
-            self.ekf.predict(m)
-        self.pred_target_states = np.asarray(self.ekf.state_list, dtype=np.float32)
+            self.ekf_common.predict(m)
+        self.pred_target_states = np.asarray(self.ekf_common.state_list, dtype=np.float32)
         pred_target_pos = self.pred_target_states[:, :3]  # Predicted positions [M, 3]
         
         # 3. Channel simulation
@@ -368,13 +375,13 @@ class MultiISACEnv:
         # 6. EKF state update & AoI update
         for m in range(self.num_targets):
             if measurements_by_target[m]:
-                self.ekf.update(m, measurements_by_target[m])
+                self.ekf_common.update(m, measurements_by_target[m])
                 self.aoi[m] = 0.0  # Reset AoI upon successful detection
             else:
                 self.aoi[m] += 1.0  # Increment AoI when target is missed
                 
         # 7. Compute reward (Objective + Hinge loss penalties)
-        u_pos, u_vel = self.ekf.get_uncer()
+        u_pos, u_vel = self.ekf_common.get_uncer()
         reward, _, _, reward_info = self._compute_reward(
             P_s=P_s,
             P_c=P_c,
@@ -439,7 +446,7 @@ class MultiISACEnv:
         Returns:
             local_obs_list (np.ndarray): Shape [B, local_obs_dim]
         """
-        u_pos, u_vel = self.ekf.get_uncer()
+        u_pos, u_vel = self.ekf_common.get_uncer()
         u_pos_norm = np.clip(u_pos / self.u_pos_max, 0.0, 1.0).astype(np.float32)  # [M]
         u_vel_norm = np.clip(u_vel / self.u_vel_max, 0.0, 1.0).astype(np.float32)  # [M]
         aoi_norm = np.clip(self.aoi / self.a_max, 0.0, 1.0).astype(np.float32)      # [M]
@@ -505,7 +512,7 @@ class MultiISACEnv:
             global_state (np.ndarray): Shape [global_state_dim]
         """
         # 1. Uncertainty & AoI: [M], [M], [M]
-        u_pos, u_vel = self.ekf.get_uncer()
+        u_pos, u_vel = self.ekf_common.get_uncer()
         u_pos_norm = np.clip(u_pos / self.u_pos_max, 0.0, 1.0).astype(np.float32)
         u_vel_norm = np.clip(u_vel / self.u_vel_max, 0.0, 1.0).astype(np.float32)
         aoi_norm = np.clip(self.aoi / self.a_max, 0.0, 1.0).astype(np.float32)
