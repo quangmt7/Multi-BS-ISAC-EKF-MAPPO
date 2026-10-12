@@ -235,15 +235,20 @@ class MultiISACEnv:
         norm_power = float(np.sum(P_s) + np.sum(P_c)) / (self.num_bs * self.p_max)
         r_obj = - (self.alpha * norm_aoi + self.beta * norm_uncertainty + self.gamma * norm_power)
 
-        # 2. Hinge loss penalty components
+        # 2. Normalized shortfall penalty components: c_i * (1 - x_i)
         user_rates_mbps = user_rates / 1e6
-        pen_qos = self.c1 * float(np.sum(np.maximum(0.0, self.r_min - user_rates_mbps)) / self.r_min)
-        pen_sensing = self.c2 * float(np.sum(np.maximum(0.0, self.p_min_sensing - p_suc)) / self.p_min_sensing)
-        pen_upos = self.c3 * float(np.sum(np.maximum(0.0, u_pos - self.u_pos_max)) / self.u_pos_max)
-        pen_uvel = self.c4 * float(np.sum(np.maximum(0.0, u_vel - self.u_vel_max)) / self.u_vel_max)
+        x1_qos = float(np.mean(np.clip( self.r_min - user_rates_mbps / self.r_min, 0.0, 1.0)))
+        x2_sens = float(np.mean(np.clip(self.p_min_sensing - p_suc / self.p_min_sensing, 0.0, 1.0)))
+        x3_upos = float(np.mean(np.clip(u_pos - self.u_pos_max / self.u_pos_max, 0.0, 1.0)))
+        x4_uvel = float(np.mean(np.clip( u_vel - self.u_vel_max / self.u_vel_max, 0.0, 1.0)))
+
+        pen_qos = self.c1 * (1.0 - x1_qos)
+        pen_sensing = self.c2 * (1.0 - x2_sens)
+        pen_upos = self.c3 * (1.0 - x3_upos)
+        pen_uvel = self.c4 * (1.0 - x4_uvel)
 
         r_penalty = pen_qos + pen_sensing + pen_upos + pen_uvel
-        reward = float(r_obj - r_penalty)
+        reward = float(r_obj + r_penalty)
 
         reward_info = {
             "reward": reward,

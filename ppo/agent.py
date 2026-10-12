@@ -200,6 +200,7 @@ class MAPPOAgent:
         total_actor_samples = T*B
         actor_indices= np.arange(total_actor_samples)
         critic_indices=np.arange(T)
+        actor_batch_size = self.batch_size * B
         
         # epochs loop
         for epoch in range(self.update_epochs):
@@ -207,8 +208,8 @@ class MAPPOAgent:
             np.random.shuffle(critic_indices)
 
             # UPDATE ACTOR  
-            for start in range(0, total_actor_samples, self.batch_size):
-                end = start + self.batch_size
+            for start in range(0, total_actor_samples, actor_batch_size):
+                end = start + actor_batch_size
                 mb_inds = actor_indices[start:end]
 
                 mb_obs = flat_obs[mb_inds]
