@@ -33,8 +33,15 @@ class BSMeasurement:
         self.ap_theta_ratio = ekf_config["measurement_noise"]["aperture"]["d_ap_theta_ratio"]
         self.ap_phi_ratio = ekf_config["measurement_noise"]["aperture"]["d_ap_phi_ratio"] 
         noise_config = ekf_config["measurement_noise"]
-        self.range_variance_bounds = (noise_config["min_range_variance"], noise_config["max_range_variance"])
-        self.angle_variance_bounds = (noise_config["min_angle_variance"], noise_config["max_angle_variance"])
+        # PyYAML may load scientific notation without an exponent sign as text.
+        self.range_variance_bounds = (
+            float(noise_config["min_range_variance"]),
+            float(noise_config["max_range_variance"]),
+        )
+        self.angle_variance_bounds = (
+            float(noise_config["min_angle_variance"]),
+            float(noise_config["max_angle_variance"]),
+        )
 
     def measurement_function(self, target_state):
         """

@@ -47,9 +47,9 @@ ekf_parameters:
 
     # Giới hạn an toàn số học (Numerical stability limits)
     min_range_variance: 1.0e-4         # Phương sai khoảng cách tối thiểu (tránh suy biến)
-    max_range_variance: 1.0e4          # Phương sai khoảng cách tối đa (khi SINR quá thấp)
+    max_range_variance: 1.0e+4         # Phương sai khoảng cách tối đa (khi SINR quá thấp)
     min_angle_variance: 1.0e-6         # Phương sai góc tối thiểu (rad^2)
-    max_angle_variance: 1.0e2          # Phương sai góc tối đa (rad^2)
+    max_angle_variance: 1.0e+2         # Phương sai góc tối đa (rad^2)
 
 
   # 5. Xác suất phát hiện và sensing thành công (Detection Probability)
