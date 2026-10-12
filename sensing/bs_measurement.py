@@ -78,7 +78,9 @@ class BSMeasurement:
         if not np.isfinite(sensing_sinr) or sensing_sinr <= 0:
             raise ValueError("sensing_sinr must be finite and positive to generate a measurement")
         else :
-            sinr_ratio = self.gamma_ref / sensing_sinr
+            # The channel returns float32 SINR; divide in float64 before clipping
+            # so a tiny positive SINR cannot overflow the intermediate ratio.
+            sinr_ratio = self.gamma_ref / float(sensing_sinr)
 
             sigma_r_sq = np.clip(self.sigma_r_0 ** 2 * sinr_ratio, *self.range_variance_bounds)
 
