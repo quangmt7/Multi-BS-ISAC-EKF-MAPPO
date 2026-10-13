@@ -245,10 +245,10 @@ class MultiISACEnv:
         norm_ue /= self.num_ues
         
         # 2. Normalized shortfall penalty components: c_i * (1 - x_i)
-        x1_qos = float(np.mean(self.r_min - user_rates_mbps / self.r_min))
-        x2_sens = float(np.mean(self.p_min_sensing - p_suc / self.p_min_sensing))
-        x3_upos = float(np.mean(u_pos - self.u_pos_max / self.u_pos_max))
-        x4_uvel = float(np.mean(u_vel - self.u_vel_max / self.u_vel_max))
+        x1_qos = float(np.mean((self.r_min - user_rates_mbps) / self.r_min))
+        x2_sens = float(np.mean((self.p_min_sensing - p_suc) / self.p_min_sensing))
+        x3_upos = float(np.mean((u_pos - self.u_pos_max) / self.u_pos_max))
+        x4_uvel = float(np.mean((u_vel - self.u_vel_max) / self.u_vel_max))
 
         pen_qos = self.c1 * (1.0 - x1_qos)
         pen_sensing = self.c2 * (1.0 - x2_sens)
