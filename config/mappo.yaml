@@ -2,7 +2,7 @@ mappo_parameters:
   # 1. Hyperparameters thuật toán MAPPO / PPO
   ppo:
     lr_actor: 1.0e-4                   # Tốc độ học mạng Actor 
-    lr_critic: 3.0e-4                  # Tốc độ học mạng Critic 
+    lr_critic: 1.0e-3                  # Tốc độ học mạng Critic
     gamma: 0.99                        # Hệ số chiết khấu phần thưởng (Discount factor gamma = 0.99)
     gae_lambda: 0.95                   # Hệ số GAE lambda = 0.95
     clip_epsilon: 0.2                  # Biên độ PPO clipping epsilon = 0.2
