@@ -47,15 +47,28 @@ class EKF:
         ], dtype=float)
 
     def update_state(self, states_list):
-        """
-        Update states_list
-        Parameter:
-            states_list : (float)[self.num_target][6] State list
+        """Reset target estimates and covariances for a new episode.
+
+        Argument:
+            (states_list) (array-like)[num_target, state_dim]: Initial target states.
+
+        Return:
+            (None).
         """
         self.state_list = [
             np.asarray(state, dtype=float).copy()
             for state in states_list
         ]
+        self.covariance_list = [
+            self.p_diag_init.copy()
+            for _ in range(self.num_target)
+        ]
+        self.u_pos = np.full(
+            self.num_target, np.trace(self.p_diag_init[:3, :3]), dtype=float
+        )
+        self.u_vel = np.full(
+            self.num_target, np.trace(self.p_diag_init[3:, 3:]), dtype=float
+        )
 
     def predict(self, target_id):
         """
