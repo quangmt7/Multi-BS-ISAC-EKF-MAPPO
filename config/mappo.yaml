@@ -65,11 +65,11 @@ mappo_parameters:
 
 
   # ----------------------------------------------------------------------------
-  # 6. Mức phạt vi phạm ràng buộc theo hàm tuyến tính phân đoạn Hinge Loss:
-  #   R_penalty = c1 * sum_k max(0, R_min - R_k)/R_min
-  #             + c2 * sum_m max(0, P_min - P_suc)/P_min
-  #             + c3 * sum_m max(0, U_pos - U_pos_max)/U_pos_max
-  #             + c4 * sum_m max(0, U_vel - U_vel_max)/U_vel_max
+  # 6. Thành phần thưởng/phạt có dấu cho các ràng buộc:
+  #   x1 = mean_k (R_min - R_k) / R_min; x2 = mean_m (P_min - P_suc) / P_min
+  #   x3 = mean_m (U_pos - U_pos_max) / U_pos_max
+  #   x4 = mean_m (U_vel - U_vel_max) / U_vel_max
+  #   R_constraint = sum_i c_i * (1 - x_i), được cộng vào R_obj.
   # ----------------------------------------------------------------------------
   penalties:
     c1_rate_qos: 0.2                   # c1 = 0.2: Phạt khi tốc độ UE không đạt: R_k < R_k^min

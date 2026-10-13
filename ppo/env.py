@@ -214,9 +214,9 @@ class MultiISACEnv:
 
     def _compute_reward(self, P_s, P_c, user_rates, p_suc, u_pos, u_vel):
         """
-        Compute reward R_t = R_obj - R_penalty:
+        Compute reward R_t = R_obj + signed constraint shaping:
         - R_obj: Minimize AoI, EKF tracking uncertainty (position + velocity), and total transmit power.
-        - R_penalty: Hinge loss penalties for constraint violations:
+        - Constraint terms can reward satisfaction or penalize violations:
             1. Communication QoS: UE rate < R_min
             2. Sensing reliability: Sensing success probability < P_min_sensing
             3. Target position uncertainty: EKF position uncertainty > U_pos_max
@@ -225,7 +225,7 @@ class MultiISACEnv:
         Returns:
             reward (float): Total scalar reward R_t
             r_obj (float): Primary objective value
-            r_penalty (float): Total penalty value
+            r_penalty (float): Signed sum of constraint terms (legacy metric name)
             reward_info (dict): Detailed breakdown of reward terms
         """
         u_pos = np.asarray(u_pos, dtype=np.float32)
@@ -244,7 +244,7 @@ class MultiISACEnv:
                 norm_ue += 1
         norm_ue /= self.num_ues
         
-        # 2. Normalized shortfall penalty components: c_i * (1 - x_i)
+        # 2. Signed, threshold-normalized deviations: c_i * (1 - x_i)
         x1_qos = float(np.mean((self.r_min - user_rates_mbps) / self.r_min))
         x2_sens = float(np.mean((self.p_min_sensing - p_suc) / self.p_min_sensing))
         x3_upos = float(np.mean((u_pos - self.u_pos_max) / self.u_pos_max))
