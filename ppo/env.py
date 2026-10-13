@@ -213,20 +213,24 @@ class MultiISACEnv:
         return X_s, X_c, P_s, P_c
 
     def _compute_reward(self, P_s, P_c, user_rates, p_suc, u_pos, u_vel):
-        """
-        Compute reward R_t = R_obj + signed constraint shaping:
-        - R_obj: Minimize AoI, EKF tracking uncertainty (position + velocity), and total transmit power.
-        - Constraint terms can reward satisfaction or penalize violations:
-            1. Communication QoS: UE rate < R_min
-            2. Sensing reliability: Sensing success probability < P_min_sensing
-            3. Target position uncertainty: EKF position uncertainty > U_pos_max
-            4. Target velocity uncertainty: EKF velocity uncertainty > U_vel_max
-            
-        Returns:
-            reward (float): Total scalar reward R_t
-            r_obj (float): Primary objective value
-            r_penalty (float): Signed sum of constraint terms (legacy metric name)
-            reward_info (dict): Detailed breakdown of reward terms
+        """Compute the objective and signed constraint terms for one slot.
+
+        Argument:
+            (P_s) (array-like)[num_bs, num_target, num_prb]: Sensing powers in watts.
+            (P_c) (array-like)[num_bs, num_ue, num_prb]: Communication powers in watts.
+            (user_rates) (array-like)[num_ue]: User throughput in bits per second.
+            (p_suc) (array-like)[num_target]: Sensing success probabilities.
+            (u_pos) (array-like)[num_target]: Position uncertainty values.
+            (u_vel) (array-like)[num_target]: Velocity uncertainty values.
+
+        Return:
+            (reward) (float): Total reward for the slot.
+            (r_obj) (float): AoI, tracking uncertainty, and power objective.
+            (r_penalty) (float): Signed constraint sum under a legacy name.
+            (reward_info) (dict[str, float]): Reward component values.
+
+        Note:
+            Constraint terms may reward satisfaction or penalize violation.
         """
         u_pos = np.asarray(u_pos, dtype=np.float32)
         u_vel = np.asarray(u_vel, dtype=np.float32)
