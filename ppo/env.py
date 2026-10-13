@@ -81,7 +81,17 @@ class MultiISACEnv:
         # For common EKF
         self.ekf_common = None
         self.detection_list = [Detection(self.p_fa) for _ in range(self.num_bs)]
-        self.measurement_list = []
+        self.measurement_list = [
+            BSMeasurement(b, self.ekf_config)
+            for b in range(self.num_bs)
+        ]
+
+        self.ekf_common = EKF(
+            self.ekf_config["state_dim"], self.ekf_config["measurement_dim"],
+            self.num_targets, self.ekf_config["dt"],
+            self.ekf_config["process_noise"], 
+            self.ekf_config["initial_covariance"], False
+        )
         
         # Initialize probability list
         self.prob_suc = np.zeros(self.num_targets)
@@ -113,6 +123,10 @@ class MultiISACEnv:
         self.ue_positions = scen_data["ue_positions"]
         self.target_states = scen_data["target_states"]
 
+        for b in range(self.num_bs):
+            self.measurement_list[b].update_bs_pos(self.bs_positions[b])
+        self.ekf_common.update_state(self.target_states)
+
         self.pred_target_states = self.target_states.copy()
 
         # Initialize residual resources and channel state metrics
@@ -120,17 +134,6 @@ class MultiISACEnv:
         self.n_res = np.full(self.num_bs, self.n_prb, dtype=np.float32)
         self.last_h_comm = np.zeros((self.num_bs, self.num_ues), dtype=np.float32)
         self.last_h_sens = np.zeros((self.num_bs, self.num_targets), dtype=np.float32)
-        
-        self.measurement_list = [
-            BSMeasurement(b, self.ekf_config, self.bs_positions[b])
-            for b in range(self.num_bs)
-        ]
-        self.ekf_common = EKF(
-            self.ekf_config["state_dim"], self.ekf_config["measurement_dim"],
-            self.num_targets, self.ekf_config["dt"],
-            self.ekf_config["process_noise"], self.target_states,
-            self.ekf_config["initial_covariance"], False
-        )
 
         local_obs_list = self._get_local_observations()
         global_state = self._get_global_state()

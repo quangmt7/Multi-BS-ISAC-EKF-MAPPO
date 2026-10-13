@@ -15,14 +15,13 @@ class BSMeasurement:
             sigma_phi_0 : (float) reference elevation variance
             ap_theta_ratio : (float) ratio between aperture of the BS and reference on azimuth
             ap_phi_ratio : (float) ratio between aperture of the BS and reference on elevation
-        bs_position : [float, float, float] position of BS
     """
-    def __init__(self, bs_id, ekf_config, bs_position):
+    def __init__(self, bs_id, ekf_config):
 
         self.bs_id = bs_id
         self.state_dim = ekf_config["state_dim"]
         self.measurement_dim = ekf_config["measurement_dim"]
-        self.bs_position = bs_position
+        self.bs_position = []
 
         self.gamma_ref = float(ekf_config["measurement_noise"]["gamma_0_linear"])
 
@@ -42,6 +41,14 @@ class BSMeasurement:
             float(noise_config["min_angle_variance"]),
             float(noise_config["max_angle_variance"]),
         )
+
+    def update_bs_pos(self, bs_pos):
+        """
+        Only update BS position
+        Parameter:
+            bs_pos : (float)[3] BS's position
+        """
+        self.bs_position = bs_pos
 
     def measurement_function(self, target_state):
         """

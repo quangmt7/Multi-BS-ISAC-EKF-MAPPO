@@ -17,7 +17,7 @@ class EKF:
             True -> separate BS, False -> common 
     """
     def __init__(self, state_dim, measurement_dim, num_target, dt, process_noise, 
-                 initial_states, initial_covariances, sepBS):
+                 initial_covariances, sepBS):
         self.state_dim = state_dim
         self.measurement_dim = measurement_dim
         self.num_target = num_target
@@ -27,10 +27,7 @@ class EKF:
         self.p_diag_init = np.diag(initial_covariances["p_diag_init"])
 
         # Initial state estimate for each target, also state storage
-        self.state_list = [
-            np.asarray(state, dtype=float).copy()
-            for state in initial_states
-        ]
+        self.state_list = []
         # Each target has its own covariance matrix
         self.covariance_list = [
             self.p_diag_init.copy()
@@ -48,6 +45,17 @@ class EKF:
             [0, 0, 0, 0, 1, 0],
             [0, 0, 0, 0, 0, 1],
         ], dtype=float)
+
+    def update_state(self, states_list):
+        """
+        Update states_list
+        Parameter:
+            states_list : (float)[self.num_target][6] State list
+        """
+        self.state_list = [
+            np.asarray(state, dtype=float).copy()
+            for state in states_list
+        ]
 
     def predict(self, target_id):
         """
