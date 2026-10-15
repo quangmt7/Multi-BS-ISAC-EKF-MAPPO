@@ -69,7 +69,6 @@ class EKF:
         self.u_vel = np.full(
             self.num_target, np.trace(self.p_diag_init[3:, 3:]), dtype=float
         )
-
     def predict(self, target_id):
         """
         Perform EKF prediction for one target.

@@ -4,8 +4,8 @@ system_parameters:
   # 1. Quy mô hệ thống (Network Entities & Sets)
   # ----------------------------------------------------------------------------
   num_bs: 5                            # B = 5 trạm BS
-  num_ue: 15                            # K = 15 người dùng truyền thông (UEs)
-  num_target: 15                        # M = 15 mục tiêu di động cần theo dõi (Targets)
+  num_ue: 10                            # K = 15 người dùng truyền thông (UEs)
+  num_target: 5                        # M = 15 mục tiêu di động cần theo dõi (Targets)
   num_prb_bs: 51                         # N_PRB = 51 khối tài nguyên vật lý mỗi BS (PRBs)
 
   # ----------------------------------------------------------------------------
@@ -18,8 +18,8 @@ system_parameters:
   subcarrier_spacing_khz: 30.0         # Khoảng cách sóng mang con (SCS) = 30.0 kHz
   prb_bandwidth_khz: 360.0             # Băng thông 1 PRB: B_0 = B_PRB = 360.0 kHz
   slot_duration_ms: 10.0               # Thời lượng 1 khe thời gian: Delta t = 10.0 ms = 0.01 s
-  max_tx_power_dbm: 33.0               # Công suất phát tối đa mỗi BS: P_max = 33.0 dBm
-  max_tx_power_watt: 2.0               # P_b^{max} dạng tuyến tính = 2.0 Watt (tương ứng 33 dBm)
+  max_tx_power_dbm: 35.0               # Công suất phát tối đa mỗi BS: P_max = 33.0 dBm
+  max_tx_power_watt: 3.162               # P_b^{max} dạng tuyến tính = 2.0 Watt (tương ứng 33 dBm)
 
   # ----------------------------------------------------------------------------
   # 3. Tạp âm nhiệt và đặc tính máy thu (Thermal Noise: B_0 * N_0)
@@ -47,10 +47,10 @@ system_parameters:
     num_antennas_bs: 64                # N_b = 64 phần tử antenna tại mỗi trạm BS
     antenna_element_gain_dbi: 0.0      # G_ant: Độ lợi của 1 phần tử antenna đơn lẻ = 0 dBi (đẳng hướng)
     antenna_element_gain_linear: 1.0   # G_ant tuyến tính = 10^(0/10) = 1.0 
-    antenna_gain_tx_dbi: 5        # G_b (hoặc G_max): Độ lợi antenna phát cực đại của mảng BS (dBi) 
-    antenna_gain_rx_dbi: 5          # G_rx: Độ lợi antenna thu cực đại của BS (dBi)
-    antenna_gain_tx_linear: 3.162      # G_tx (G_b/G_max) tuyến tính = 10^(5/10) 
-    antenna_gain_rx_linear: 3.162      # G_rx tuyến tính = 10^(5/10) 
+    antenna_gain_tx_dbi: 18.0        # G_b (hoặc G_max): Độ lợi antenna phát cực đại của mảng BS (dBi)
+    antenna_gain_rx_dbi: 18.0          # G_rx: Độ lợi antenna thu cực đại của BS (dBi)
+    antenna_gain_tx_linear: 63.1      # G_tx (G_b/G_max) tuyến tính = 10^(5/10)
+    antenna_gain_rx_linear: 63.1      # G_rx tuyến tính = 10^(5/10)
     beam_pattern_q: 2.0                # q > 0: Tham số điều khiển độ suy giảm búp sóng khi lệch hướng 
 
     # --- Can nhiễu C2S và IBI ---
