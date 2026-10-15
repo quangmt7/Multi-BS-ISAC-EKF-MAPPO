@@ -200,23 +200,12 @@ class WirelessChannel:
  
  
  
-    def compute_ibi_interference(self, X_s: np.ndarray, P_s: np.ndarray) -> np.ndarray:
-        """
-        Compute Inter-Base-Station Interference (IBI) 
-        eta_IBI = 10^(-2) = 0.01
-        """
-        # 1. radar power  (B, M, R)
-        p_radar = X_s * P_s
-        # 2. Total radar power of base station: (B, R)
-        p_bs = np.sum(p_radar, axis=1)
-        # 3. total radar power of system : (1, R)
-        p_total = np.sum(p_bs, axis=0, keepdims=True)
-        # 4. other bs power (b' != b) (B, 1, R)
-        other_bs_power = np.maximum(0.0, p_total - p_bs)[:, np.newaxis, :]
-        # 5.
-        ibi_interf = self.ibi_eta * other_bs_power
-        return ibi_interf.astype(np.float32)
- 
+    def compute_ibi_interference(self, X_s: np.ndarray, P_s: np.ndarray, sensing_gain: np.ndarray) -> np.ndarray:
+       p_radar_rx = (X_s * P_s * sensing_gain).astype(np.float32)
+       p_total_rx = np.sum(p_radar_rx, axis=0, keepdims=True)
+       other_bs_rx = np.maximum(0.0, p_total_rx - p_radar_rx)
+       ibi_interf = self.ibi_eta * other_bs_rx     
+       return ibi_interf.astype(np.float32)
 
  
     def get_sensing_sinr(
@@ -249,7 +238,7 @@ class WirelessChannel:
         signal_sensing = P_s * sensing_gain  # (B, M, R)
 
         c2s_interf = self.compute_c2s_interference(P_c)
-        ibi_interf = self.compute_ibi_interference(X_s, P_s)    
+        ibi_interf = self.compute_ibi_interference(X_s, P_s, sensing_gain)    
         total_interf = self.noise_power + c2s_interf + ibi_interf
         sensing_sinr_prb = np.where(
             (X_s == 1) & (P_s > 0),

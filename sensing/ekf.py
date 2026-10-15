@@ -56,7 +56,9 @@ class EKF:
             np.asarray(state, dtype=float).copy()
             for state in states_list
         ]
-
+        self.covariance_list = [self.p_diag_init.copy() for _ in range(self.num_target)]
+        self.u_pos = np.full(self.num_target, np.trace(self.p_diag_init[:3, :3]))
+        self.u_vel = np.full(self.num_target, np.trace(self.p_diag_init[3:, 3:]))
     def predict(self, target_id):
         """
         Perform EKF prediction for one target.
