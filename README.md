@@ -57,3 +57,13 @@ Chạy một lượt mới trong thư mục riêng để giữ kết quả trư�
     py -3.12 main.py --output-dir results/run_20261016
 
 Các checkpoint trước thay đổi cấu hình/reward cần được giữ để đối chiếu; bắt đầu lượt huấn luyện mới khi đánh giá mô hình đã sửa.
+
+## Xuất hình báo cáo
+
+Sau training, mỗi biểu đồ được lưu thành một PNG riêng trong results/figures: training_curve, comm_rate, comm_qos_satisfaction, sensing_success_prob, sensing_aoi, sensing_pos_error, sensing_vel_error, ppo_policy_loss, ppo_critic_loss và ppo_entropy. Metric không có dữ liệu sẽ không sinh hình trống. Đường return giữ cửa sổ trung bình trượt 20 episode.
+
+Xuất lại hình từ metrics đã có, không chạy training:
+
+    py -3.12 main.py --figures-only --output-dir results
+
+Các ảnh ghép do phiên bản cũ tạo không được ghi thêm ở lượt mới; nếu dùng lại thư mục cũ, chuyển chúng sang thư mục lưu trữ trước khi chọn hình báo cáo.
