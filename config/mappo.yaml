@@ -65,11 +65,12 @@ mappo_parameters:
 
 
   # ----------------------------------------------------------------------------
-  # 6. Thành phần thưởng/phạt có dấu cho các ràng buộc:
-  #   x1 = mean_k (R_min - R_k) / R_min; x2 = mean_m (P_min - P_suc) / P_min
-  #   x3 = mean_m (U_pos - U_pos_max) / U_pos_max
-  #   x4 = mean_m (U_vel - U_vel_max) / U_vel_max
-  #   R_constraint = sum_i c_i * (1 - x_i), được cộng vào R_obj.
+  # 6. Phạt vi phạm ràng buộc sau khi chuẩn hóa theo từng UE/target:
+  #   v1 = mean_k max(0, 1 - R_k / R_min)
+  #   v2 = mean_m max(0, 1 - P_suc / P_min)
+  #   v3 = mean_m max(0, U_pos / U_pos_max - 1)
+  #   v4 = mean_m max(0, U_vel / U_vel_max - 1)
+  #   Reward = R_obj - sum_i c_i * v_i; vượt QoS không được thưởng thêm.
   # ----------------------------------------------------------------------------
   penalties:
     c1_rate_qos: 0.2                   # c1 = 0.2: Phạt khi tốc độ UE không đạt: R_k < R_k^min
@@ -90,13 +91,9 @@ mappo_parameters:
     min_sensing_success_prob: 0.90     # P_m^min = 0.90 (Xác suất sensing thành công tối thiểu)
 
   # ----------------------------------------------------------------------------
-  # 8. Mô hình nhiễu C2S và IBI (Interference Parameters)
+  # 8. Tham số C2S/IBI chỉ được khai báo ở nguồn cấu hình vật lý:
+  #    system.yaml -> system_parameters.channel_and_interference
   # ----------------------------------------------------------------------------
-  interference:
-    c2s_leakage_eta0: 1.0e-11           # eta_0 = 10^-3 (-30 dB): Mức rò rỉ C2S tham chiếu
-    c2s_leakage_alpha: 1.0             # alpha = 1.0: Hệ số suy giảm leakage theo khoảng cách PRB
-    ibi_coupling_eta: 1.0e-2           # eta_IBI = 10^-2 (-20 dB): Hệ số ghép nối nhiễu liên trạm BS
-
   # ----------------------------------------------------------------------------
   # 9. Quản lý quá trình huấn luyện (Training & Rollout Management)
   # ----------------------------------------------------------------------------

@@ -41,6 +41,19 @@ Integrated Sensing and Communication (ISAC) cho phép hệ thống sử dụng c
 
     + Thư mục output: Lưu checkpoint, log, metric, figure và kết quả cuối cùng. Không chứa logic simulation.
 
- - main/
+ - main.py
 
-    + main.py: Điểm chạy chính: load config → tạo scenario → tạo environment → tạo MAPPO → chạy episode/timestep → lưu kết quả.
+    + Điểm chạy chính ở thư mục gốc: load config → tạo scenario → tạo environment → tạo MAPPO → chạy episode/timestep → lưu kết quả.
+
+## Quy ước mô phỏng và reward
+
+- Mỗi slot cập nhật chuyển động của mọi target. EKF bắt đầu từ estimate có sai số Gaussian với covariance P0 trong config/ekf.yaml; simulator giữ ground truth riêng. Khi triển khai so sánh, các baseline cần dùng bản sao của env.initial_estimates để có cùng prior.
+- C2S/IBI chỉ khai báo ở config/system.yaml, mục channel_and_interference. Hệ số C2S 1e-11 là giả định coupling công suất còn dư sau cách ly/triệt nhiễu của mô phỏng hiện tại. Cấu hình MAPPO cũ còn bản sao mâu thuẫn sẽ báo lỗi.
+- Reward = âm của chi phí AoI, uncertainty, công suất, trừ tổng penalty vi phạm ngưỡng đã chuẩn hóa. Penalty không âm; UE đạt hoặc vượt tốc độ tối thiểu không bị phạt và không nhận thêm thưởng throughput. Vi phạm được tính riêng từng UE/target trước khi lấy trung bình.
+- Reward mới có thể âm và không so trực tiếp giá trị return với lượt dùng reward trước. Giữ nguyên alpha, beta, gamma và các trọng số c1..c4.
+
+Chạy một lượt mới trong thư mục riêng để giữ kết quả trước:
+
+    py -3.12 main.py --output-dir results/run_20261016
+
+Các checkpoint trước thay đổi cấu hình/reward cần được giữ để đối chiếu; bắt đầu lượt huấn luyện mới khi đánh giá mô hình đã sửa.
