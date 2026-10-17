@@ -8,7 +8,7 @@ mappo_parameters:
     clip_epsilon: 0.2                  # Biên độ PPO clipping epsilon = 0.2
     ppo_epochs: 10                     # Số epoch tối ưu hóa trên buffer mỗi lần cập nhật
     batch_size: 25                     # Kích thước mỗi mini-batch huấn luyện (100 slots / 4 = 25)
-    entropy_coef: 0.01                 # Trọng số khuyến khích khám phá (Entropy bonus coefficient)
+    entropy_coef: 0.0001                 # Trọng số khuyến khích khám phá (Entropy bonus coefficient)
     value_loss_coef: 0.5               # Trọng số hàm mất mát của Critic (Value loss coefficient)
     max_grad_norm: 0.5                 # Ngưỡng cắt gradient chống bùng nổ (Gradient clipping)
     use_clipped_value_loss: false      # Sử dụng clipped value loss để huấn luyện Critic ổn định
