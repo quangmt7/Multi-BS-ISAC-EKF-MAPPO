@@ -2,7 +2,7 @@ mappo_parameters:
   # 1. Hyperparameters thuật toán MAPPO / PPO
   ppo:
     lr_actor: 1.0e-4                   # Tốc độ học mạng Actor 
-    lr_critic: 1.0e-3                  # Tốc độ học mạng Critic 
+    lr_critic: 1.0e-3                  # Tốc độ học mạng Critic
     gamma: 0.99                        # Hệ số chiết khấu phần thưởng (Discount factor gamma = 0.99)
     gae_lambda: 0.95                   # Hệ số GAE lambda = 0.95
     clip_epsilon: 0.2                  # Biên độ PPO clipping epsilon = 0.2
@@ -65,11 +65,12 @@ mappo_parameters:
 
 
   # ----------------------------------------------------------------------------
-  # 6. Mức phạt vi phạm ràng buộc theo hàm tuyến tính phân đoạn Hinge Loss:
-  #   R_penalty = c1 * sum_k max(0, R_min - R_k)/R_min
-  #             + c2 * sum_m max(0, P_min - P_suc)/P_min
-  #             + c3 * sum_m max(0, U_pos - U_pos_max)/U_pos_max
-  #             + c4 * sum_m max(0, U_vel - U_vel_max)/U_vel_max
+  # 6. Phạt vi phạm ràng buộc sau khi chuẩn hóa theo từng UE/target:
+  #   v1 = mean_k max(0, 1 - R_k / R_min)
+  #   v2 = mean_m max(0, 1 - P_suc / P_min)
+  #   v3 = mean_m max(0, U_pos / U_pos_max - 1)
+  #   v4 = mean_m max(0, U_vel / U_vel_max - 1)
+  #   Reward = R_obj - sum_i c_i * v_i; vượt QoS không được thưởng thêm.
   # ----------------------------------------------------------------------------
   penalties:
     c1_rate_qos: 0.2                   # c1 = 0.2: Phạt khi tốc độ UE không đạt: R_k < R_k^min
@@ -90,19 +91,15 @@ mappo_parameters:
     min_sensing_success_prob: 0.90     # P_m^min = 0.90 (Xác suất sensing thành công tối thiểu)
 
   # ----------------------------------------------------------------------------
-  # 8. Mô hình nhiễu C2S và IBI (Interference Parameters)
+  # 8. Tham số C2S/IBI chỉ được khai báo ở nguồn cấu hình vật lý:
+  #    system.yaml -> system_parameters.channel_and_interference
   # ----------------------------------------------------------------------------
-  interference:
-    c2s_leakage_eta0: 1.0e-11           # eta_0 = 10^-3 (-30 dB): Mức rò rỉ C2S tham chiếu
-    c2s_leakage_alpha: 1.0             # alpha = 1.0: Hệ số suy giảm leakage theo khoảng cách PRB
-    ibi_coupling_eta: 1.0e-2           # eta_IBI = 10^-2 (-20 dB): Hệ số ghép nối nhiễu liên trạm BS
-
   # ----------------------------------------------------------------------------
   # 9. Quản lý quá trình huấn luyện (Training & Rollout Management)
   # ----------------------------------------------------------------------------
   training:
     total_episodes: 2000             # Tổng số episode huấn luyện
-    episode_length: 100              # T = 100 khe thời gian mỗi episode 
+    episode_length: 100              # T = 100 khe thời gian liên tiếp mỗi episode
     rollout_threads: 1                 # Số môi trường song song (nếu dùng vector env)
     save_interval: 50                  # Lưu checkpoint sau mỗi 50 episode
     update_interval: 10                # Cứ mỗi bao nhiêu episode thì cập nhật

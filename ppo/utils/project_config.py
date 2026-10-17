@@ -72,6 +72,44 @@ class ProjectConfig:
         project_config.validate()
         return project_config
 
+    def _validate_interference(self, system: Mapping, mappo: Mapping) -> None:
+        """Validate canonical interference settings and legacy duplicates.
+
+        Argument:
+            (system) (Mapping): Physical system settings.
+            (mappo) (Mapping): Algorithm settings with optional legacy copies.
+
+        Return:
+            (None).
+
+        Note:
+            The channel reads system_parameters.channel_and_interference.
+            Conflicting legacy copies are rejected instead of being ignored.
+        """
+        channel = system.get("channel_and_interference", {})
+        legacy = mappo.get("interference", {})
+        if not isinstance(channel, Mapping) or not isinstance(legacy, Mapping):
+            raise ValueError("Interference settings must be mappings")
+        for name in ("c2s_leakage_eta0", "c2s_leakage_alpha", "ibi_coupling_eta"):
+            try:
+                value = float(channel[name])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"system_parameters.channel_and_interference.{name} must be numeric"
+                ) from exc
+            if not np.isfinite(value) or value < 0:
+                raise ValueError(f"{name} must be finite and non-negative")
+            if name in legacy:
+                try:
+                    duplicate = float(legacy[name])
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(f"mappo_parameters.interference.{name} must be numeric") from exc
+                if not np.isclose(value, duplicate, rtol=1e-6, atol=0.0):
+                    raise ValueError(
+                        f"Conflicting {name}: use system_parameters.channel_and_interference "
+                        "as the source of truth and remove the legacy MAPPO copy"
+                    )
+
     def validate(self) -> None:
         """Validate fields required by the training and agent contracts.
 
@@ -93,6 +131,7 @@ class ProjectConfig:
                 raise ValueError(f"system_parameters.{name} must be a positive integer")
 
         mappo = self.data["mappo_parameters"]
+        self._validate_interference(system, mappo)
         training = mappo.get("training")
         if not isinstance(training, Mapping):
             raise ValueError(

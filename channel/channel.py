@@ -168,7 +168,7 @@ class WirelessChannel:
         X_sigma = self.rng.normal(0.0, self.shadowing, size=(self.num_bs, self.num_targets))
         G_path = (self.wavelength ** 2 * self.rcs
                   / ((4.0 * np.pi) ** 3 * dist ** 4)
-                  * 10.0 ** (-2.0*X_sigma / 10.0))
+                  * 10.0 ** (-2.0 * X_sigma / 10.0))
         # 2. get beam gain
         beam_gain = self.compute_sensing_beamforming_gain(bs_pos, target_pos, pred_target_pos)
         # 3.small scale fading
@@ -204,7 +204,7 @@ class WirelessChannel:
        p_radar_rx = (X_s * P_s * sensing_gain).astype(np.float32)
        p_total_rx = np.sum(p_radar_rx, axis=0, keepdims=True)
        other_bs_rx = np.maximum(0.0, p_total_rx - p_radar_rx)
-       ibi_interf = self.ibi_eta * other_bs_rx     
+       ibi_interf = self.ibi_eta * other_bs_rx
        return ibi_interf.astype(np.float32)
 
  
@@ -238,7 +238,7 @@ class WirelessChannel:
         signal_sensing = P_s * sensing_gain  # (B, M, R)
 
         c2s_interf = self.compute_c2s_interference(P_c)
-        ibi_interf = self.compute_ibi_interference(X_s, P_s, sensing_gain)    
+        ibi_interf = self.compute_ibi_interference(X_s, P_s, sensing_gain)
         total_interf = self.noise_power + c2s_interf + ibi_interf
         sensing_sinr_prb = np.where(
             (X_s == 1) & (P_s > 0),

@@ -639,50 +639,39 @@ class Scenario:
 # Động học mục tiêu và Vector đo đạc EKF
 # =========================================================================
     def step_targets(self) -> None:
+        """Propagate every target with independent process noise.
+
+        Argument:
+            (None).
+
+        Return:
+            (None).
+
+        Note:
+            Each target reflects its velocity at the simulation boundaries.
         """
-    Cập nhật trạng thái từng mục tiêu:
-        s_m(t+1) = F @ s_m(t) + w_m(t)
-        w_m ~ N(0, Q_m)
-
-    Mỗi target có một mẫu nhiễu độc lập.
-    Áp dụng phản xạ biên khi chạm giới hạn vùng mô phỏng.
-    """
         for tgt in self.targets:
-        # Lấy mẫu nhiễu RIÊNG cho từng target
             w_m = self.rng.multivariate_normal(
-             np.zeros(6),
-            self.Q_m
-        )
-
+                np.zeros(6), self.Q_m
+            )
             new_state = self.F @ tgt.state + w_m
 
-        # Phản xạ biên X
             if new_state[0] < 0.0 or new_state[0] > self.area_x:
                 new_state[3] = -new_state[3]
-                new_state[0] = np.clip(
-                    new_state[0], 0.0, self.area_x
-            )
+                new_state[0] = np.clip(new_state[0], 0.0, self.area_x)
 
-        # Phản xạ biên Y
             if new_state[1] < 0.0 or new_state[1] > self.area_y:
                 new_state[4] = -new_state[4]
-                new_state[1] = np.clip(
-                    new_state[1], 0.0, self.area_y
-            )
+                new_state[1] = np.clip(new_state[1], 0.0, self.area_y)
 
-        # Phản xạ biên Z
-            if (
-                new_state[2] < self.tgt_h_min
-            or new_state[2] > self.tgt_h_max
-        ):
+            if new_state[2] < self.tgt_h_min or new_state[2] > self.tgt_h_max:
                 new_state[5] = -new_state[5]
                 new_state[2] = np.clip(
-                new_state[2],
-                self.tgt_h_min,
-                self.tgt_h_max
-            )
+                    new_state[2], self.tgt_h_min, self.tgt_h_max
+                )
 
-        tgt.state = new_state
+            tgt.state = new_state
+
     def get_measurement_vectors(self) -> np.ndarray:
         """
         Tính vector đo đạc lý tưởng e_{b,m} = [r, theta, phi]^T :

@@ -75,7 +75,7 @@ class ResultArtifacts:
         return self.render(self.metrics_path)
 
     def render(self, metrics_path: str | Path) -> list[Path]:
-        """Plot recorded training, communication, sensing and PPO metrics.
+        """Plot each recorded metric in its own single-axis figure.
 
         Argument:
             (metrics_path) (str | Path): JSON Lines episode metrics file.
@@ -100,30 +100,20 @@ class ResultArtifacts:
         ax.legend()
         output_paths.append(self._save(fig, "training_curve.png"))
 
-        output_paths.append(self._panel_figure(
-            records, "Communication", "communication.png", (
-                ("comm_rate_mean_mbps", "Mean UE rate (Mbps)"),
-                ("qos_satisfaction_rate", "QoS satisfaction rate"),
-            )
-        ))
-        output_paths.append(self._panel_figure(
-            records, "Sensing and tracking", "sensing_tracking.png", (
-                ("sensing_success_prob_mean", "Mean sensing success probability"),
-                ("aoi_mean", "Mean age of information"),
-                ("pos_error_mean_m", "Mean position error (m)"),
-                ("vel_error_mean_mps", "Mean velocity error (m/s)"),
-            )
-        ))
-
-        loss_keys = (
-            ("policy_loss", "Policy loss"),
-            ("critic_loss", "Critic loss"),
-            ("entropy", "Policy entropy"),
+        metric_figures = (
+            ("comm_rate_mean_mbps", "Mean UE rate (Mbps)", "comm_rate.png"),
+            ("qos_satisfaction_rate", "QoS satisfaction rate", "comm_qos_satisfaction.png"),
+            ("sensing_success_prob_mean", "Mean sensing success probability", "sensing_success_prob.png"),
+            ("aoi_mean", "Mean age of information (slots)", "sensing_aoi.png"),
+            ("pos_error_mean_m", "Mean position error (m)", "sensing_pos_error.png"),
+            ("vel_error_mean_mps", "Mean velocity error (m/s)", "sensing_vel_error.png"),
+            ("policy_loss", "Policy loss", "ppo_policy_loss.png"),
+            ("critic_loss", "Critic loss", "ppo_critic_loss.png"),
+            ("entropy", "Policy entropy", "ppo_entropy.png"),
         )
-        if any(any(key in record for record in records) for key, _ in loss_keys):
-            output_paths.append(self._panel_figure(
-                records, "PPO updates", "ppo_updates.png", loss_keys
-            ))
+        for key, label, filename in metric_figures:
+            if len(self._series(records, key)[0]):
+                output_paths.append(self._metric_figure(records, key, label, filename))
         return output_paths
 
     @staticmethod
@@ -174,31 +164,26 @@ class ResultArtifacts:
             return np.array([], dtype=int), np.array([], dtype=float)
         return np.asarray(points, dtype=float).T
 
-    def _panel_figure(
-        self, records: list[dict[str, Any]], title: str, filename: str,
-        panels: tuple[tuple[str, str], ...],
+    def _metric_figure(
+        self, records: list[dict[str, Any]], key: str, label: str, filename: str,
     ) -> Path:
-        """Draw metrics with different units on separate aligned panels.
+        """Draw one metric on one axis for use in reports and slides.
 
         Argument:
             (records) (list[dict[str, Any]]): Episode metric mappings.
-            (title) (str): Figure title.
+            (key) (str): Metric name to extract.
+            (label) (str): Figure title and vertical-axis label, including units.
             (filename) (str): PNG filename.
-            (panels) (tuple[tuple[str, str], ...]): Metric keys and axis labels.
 
         Return:
             (path) (Path): Written PNG path.
         """
 
-        fig, axes = plt.subplots(len(panels), 1, figsize=(10, 3 * len(panels)),
-                                 sharex=True, squeeze=False)
-        for ax, (key, label) in zip(axes[:, 0], panels):
-            episodes, values = self._series(records, key)
-            ax.plot(episodes, values, color="#2563eb", linewidth=1.2)
-            ax.set_ylabel(label)
-            ax.grid(alpha=0.2)
-        axes[-1, 0].set_xlabel("Episode")
-        fig.suptitle(title)
+        episodes, values = self._series(records, key)
+        fig, ax = plt.subplots(figsize=(10, 5))
+        ax.plot(episodes, values, color="#2563eb", linewidth=1.2)
+        ax.set(title=label, xlabel="Episode", ylabel=label)
+        ax.grid(alpha=0.2)
         return self._save(fig, filename)
 
     def _save(self, fig: Any, filename: str) -> Path:

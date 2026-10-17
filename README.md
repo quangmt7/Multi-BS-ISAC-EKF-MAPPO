@@ -41,6 +41,6 @@ Integrated Sensing and Communication (ISAC) cho phép hệ thống sử dụng c
 
     + Thư mục output: Lưu checkpoint, log, metric, figure và kết quả cuối cùng. Không chứa logic simulation.
 
- - main/
+ - main.py
 
-    + main.py: Điểm chạy chính: load config → tạo scenario → tạo environment → tạo MAPPO → chạy episode/timestep → lưu kết quả.
+    + Điểm chạy chính ở thư mục gốc: load config → tạo scenario → tạo environment → tạo MAPPO → chạy episode/timestep → lưu kết quả.
