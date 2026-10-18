@@ -137,6 +137,7 @@ class MultiISACEnv:
             np.random.seed(seed)
             if hasattr(self.channel, "rng"):
                 self.channel.rng = np.random.default_rng(seed)
+        self.channel.last_sensing_diagnostics = {}
             
         self.current_step = 0
         self.aoi = np.zeros(self.num_targets, dtype=np.float32)
@@ -514,6 +515,7 @@ class MultiISACEnv:
             info[f"u_pos_separate_bs_{b}_mean"] = float(np.mean(u_pos_sep[b]))
             info[f"u_vel_separate_bs_{b}_mean"] = float(np.mean(u_vel_sep[b]))
         info.update(reward_info)
+        info.update(self.channel.last_sensing_diagnostics)
         return next_local_obs, next_global_state, reward, terminated, truncated, info
 
     def _get_local_observations(self):
