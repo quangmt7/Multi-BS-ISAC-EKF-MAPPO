@@ -86,12 +86,23 @@ class MultiISACEnv:
             for b in range(self.num_bs)
         ]
 
+        # EKF common
         self.ekf_common = EKF(
             self.ekf_config["state_dim"], self.ekf_config["measurement_dim"],
             self.num_targets, self.ekf_config["dt"],
             self.ekf_config["process_noise"], 
             self.ekf_config["initial_covariance"], False
         )
+        # EKF for each BS
+        self.ekf_separate = []
+        for _ in range(self.num_bs):
+            self.ekf_separate.append(
+            EKF(
+            self.ekf_config["state_dim"], self.ekf_config["measurement_dim"],
+            self.num_targets, self.ekf_config["dt"],
+            self.ekf_config["process_noise"], 
+            self.ekf_config["initial_covariance"], False
+            ))
         
         # Initialize probability list
         self.prob_suc = np.zeros(self.num_targets)
@@ -123,10 +134,11 @@ class MultiISACEnv:
         self.ue_positions = scen_data["ue_positions"]
         self.target_states = scen_data["target_states"]
 
+        self.ekf_common.update_state(self.target_states)
         for b in range(self.num_bs):
             self.measurement_list[b].update_bs_pos(self.bs_positions[b])
-        self.ekf_common.update_state(self.target_states)
-
+            self.ekf_separate[b].update_state(self.target_states)
+        
         self.pred_target_states = self.target_states.copy()
 
         # Initialize residual resources and channel state metrics
@@ -245,10 +257,10 @@ class MultiISACEnv:
         norm_ue /= self.num_ues
         
         # 2. Normalized shortfall penalty components: c_i * (1 - x_i)
-        x1_qos = float(np.mean(self.r_min - user_rates_mbps / self.r_min))
-        x2_sens = float(np.mean(self.p_min_sensing - p_suc / self.p_min_sensing))
-        x3_upos = float(np.mean(u_pos - self.u_pos_max / self.u_pos_max))
-        x4_uvel = float(np.mean(u_vel - self.u_vel_max / self.u_vel_max))
+        x1_qos = float(np.mean(np.clip(self.r_min - user_rates_mbps / self.r_min, 0.0, 1.0)))
+        x2_sens = float(np.mean(np.clip(self.p_min_sensing - p_suc / self.p_min_sensing, 0.0, 1.0)))
+        x3_upos = float(np.mean(np.clip(u_pos - self.u_pos_max / self.u_pos_max, 0.0, 1.0)))
+        x4_uvel = float(np.mean(np.clip(u_vel - self.u_vel_max / self.u_vel_max, 0.0, 1.0)))
 
         pen_qos = self.c1 * (1.0 - x1_qos)
         pen_sensing = self.c2 * (1.0 - x2_sens)
@@ -375,16 +387,19 @@ class MultiISACEnv:
                         (self.bs_positions[i], measurement, covariance)
                     )
         
-        # 6. EKF state update & AoI update
+        # 6. EKF state update & AoI update (both common and separate)
         for m in range(self.num_targets):
             if measurements_by_target[m]:
                 self.ekf_common.update(m, measurements_by_target[m])
+                for b in range(self.num_bs):
+                    self.ekf_separate[b].update(m, measurements_by_target[m])
                 self.aoi[m] = 0.0  # Reset AoI upon successful detection
             else:
                 self.aoi[m] += 1.0  # Increment AoI when target is missed
                 
         # 7. Compute reward (Objective + Hinge loss penalties)
         u_pos, u_vel = self.ekf_common.get_uncer()
+        
         reward, _, _, reward_info = self._compute_reward(
             P_s=P_s,
             P_c=P_c,
@@ -393,6 +408,12 @@ class MultiISACEnv:
             u_pos=u_pos,
             u_vel=u_vel
         )          
+
+        u_pos_sep, u_vel_sep = 0, 0
+        for b in range(self.num_bs):
+            u_pos_sep1, u_vel_sep1 = self.ekf_separate[b].get_uncer()
+            u_pos_sep = min(min(u_pos_sep1), u_pos_sep)
+            u_vel_sep = min(min(u_vel_sep1), u_vel_sep)
         
         # 8. Check termination and truncation
         lost_target = bool(np.any(u_pos > self.u_pos_max) or np.any(u_vel > self.u_vel_max))
