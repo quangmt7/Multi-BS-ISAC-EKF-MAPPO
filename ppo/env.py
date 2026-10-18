@@ -15,6 +15,16 @@ class MultiISACEnv:
     """
     
     def __init__(self, config: dict):
+        """Initialize the shared controller and independent per-BS estimators.
+
+        Argument:
+            (config) (dict): Validated system, EKF and MAPPO configuration.
+        Return:
+            (None).
+        Note:
+            The common filter controls observations, beam steering and reward.
+            Separate filters are diagnostic baselines on the same measurements.
+        """
         self.config = config
 
         # 1. System parameters
@@ -94,15 +104,15 @@ class MultiISACEnv:
             self.ekf_config["initial_covariance"], False
         )
         # EKF for each BS
-        self.ekf_separate = []
-        for _ in range(self.num_bs):
-            self.ekf_separate.append(
+        self.ekf_separate = [
             EKF(
-            self.ekf_config["state_dim"], self.ekf_config["measurement_dim"],
-            self.num_targets, self.ekf_config["dt"],
-            self.ekf_config["process_noise"], 
-            self.ekf_config["initial_covariance"], False
-            ))
+                self.ekf_config["state_dim"], self.ekf_config["measurement_dim"],
+                self.num_targets, self.ekf_config["dt"],
+                self.ekf_config["process_noise"],
+                self.ekf_config["initial_covariance"], True,
+            )
+            for _ in range(self.num_bs)
+        ]
         
         # Initialize probability list
         self.prob_suc = np.zeros(self.num_targets)
@@ -137,12 +147,13 @@ class MultiISACEnv:
         self.ue_positions = scen_data["ue_positions"]
         self.target_states = scen_data["target_states"]
 
-        self.ekf_common.update_state(self.target_states)
+        self.initial_estimates = self._sample_initial_estimates(self.target_states, seed)
+        self.ekf_common.update_state(self.initial_estimates)
         for b in range(self.num_bs):
             self.measurement_list[b].update_bs_pos(self.bs_positions[b])
-            self.ekf_separate[b].update_state(self.target_states)
+            self.ekf_separate[b].update_state(self.initial_estimates)
         
-        self.pred_target_states = self.target_states.copy()
+        self.pred_target_states = self.initial_estimates.astype(np.float32, copy=True)
 
         # Initialize residual resources and channel state metrics
         self.p_res = np.full(self.num_bs, self.p_max, dtype=np.float32)
@@ -326,20 +337,18 @@ class MultiISACEnv:
         return reward, r_obj, r_penalty, reward_info
 
     def step(self, actions_prb, actions_pwr):
-        """
-        Execute one environment transition step.
-        
-        Args:
-            actions_prb: PRB destination choices for each BS [B, R]
-            actions_pwr: Continuous power allocation weights for each BS [B, R]
-            
-        Returns:
-            next_local_obs (np.ndarray): Next local observations for all BSs [B, local_obs_dim]
-            next_global_state (np.ndarray): Next centralized state vector [global_state_dim]
-            reward (float): Step reward
-            terminated (bool): Episode termination flag (target tracking lost)
-            truncated (bool): Episode truncation flag (max steps reached)
-            info (dict): Diagnostic and logging metrics
+        """Advance a slot and update common and separate filters with paired data.
+
+        Argument:
+            (actions_prb) (array-like)[B, R]: PRB destination choices.
+            (actions_pwr) (array-like)[B, R]: Raw power allocation weights.
+        Return:
+            (transition) (tuple): Next local/global observations, scalar reward,
+                terminal/truncation flags and diagnostic metrics.
+        Note:
+            All filters predict once per slot. A separate filter only consumes
+            its own BS's already generated measurements. Logged tracking errors
+            use post-update estimates at the same slot as the ground truth.
         """
         self.current_step += 1
         
@@ -353,7 +362,10 @@ class MultiISACEnv:
         # 2. EKF predict (predict next target states for beamforming direction)
         for m in range(self.num_targets):
             self.ekf_common.predict(m)
+            for separate in self.ekf_separate:
+                separate.predict(m)
         self.pred_target_states = np.asarray(self.ekf_common.state_list, dtype=np.float32)
+        prediction_states = self.pred_target_states.copy()
         pred_target_pos = self.pred_target_states[:, :3]  # Predicted positions [M, 3]
         
         # 3. Channel simulation
@@ -415,6 +427,7 @@ class MultiISACEnv:
         # Collect measurements y_{b,m} = [r, theta, phi]^T and covariance matrices R_{b,m}
         # Only measure if the detection is successfull
         measurements_by_target = [[] for _ in range(self.num_targets)]
+        measurements_by_bs = [[[] for _ in range(self.num_targets)] for _ in range(self.num_bs)]
         for target in range(self.num_targets):
             for i in range(self.num_bs):
                 if self.detect_mask[i][target] == 1:
@@ -425,16 +438,23 @@ class MultiISACEnv:
                     measurements_by_target[target].append(
                         (self.bs_positions[i], measurement, covariance)
                     )
+                    measurements_by_bs[i][target].append(
+                        (self.bs_positions[i], measurement, covariance)
+                    )
         
         # 6. EKF state update & AoI update (both common and separate)
         for m in range(self.num_targets):
             if measurements_by_target[m]:
                 self.ekf_common.update(m, measurements_by_target[m])
-                for b in range(self.num_bs):
-                    self.ekf_separate[b].update(m, measurements_by_target[m])
                 self.aoi[m] = 0.0  # Reset AoI upon successful detection
             else:
                 self.aoi[m] += 1.0  # Increment AoI when target is missed
+            for b, separate in enumerate(self.ekf_separate):
+                if measurements_by_bs[b][m]:
+                    separate.update(m, measurements_by_bs[b][m])
+
+        # Posterior states are the current estimates used by the next decision.
+        self.pred_target_states = np.asarray(self.ekf_common.state_list, dtype=np.float32)
                 
         # 7. Compute reward (Objective + Hinge loss penalties)
         u_pos, u_vel = self.ekf_common.get_uncer()
@@ -448,11 +468,10 @@ class MultiISACEnv:
             u_vel=u_vel
         )          
 
-        u_pos_sep, u_vel_sep = 0, 0
-        for b in range(self.num_bs):
-            u_pos_sep1, u_vel_sep1 = self.ekf_separate[b].get_uncer()
-            u_pos_sep = min(min(u_pos_sep1), u_pos_sep)
-            u_vel_sep = min(min(u_vel_sep1), u_vel_sep)
+        separate_uncertainties = [f.get_uncer() for f in self.ekf_separate]
+        u_pos_sep = np.stack([values[0] for values in separate_uncertainties])
+        u_vel_sep = np.stack([values[1] for values in separate_uncertainties])
+        separate_states = np.asarray([f.state_list for f in self.ekf_separate])
         
         # 8. Check termination and truncation
         lost_target = bool(np.any(u_pos > self.u_pos_max) or np.any(u_vel > self.u_vel_max))
@@ -475,16 +494,25 @@ class MultiISACEnv:
             "target_speed_mean_mps": float(np.mean(target_speeds)),
             "pos_error_mean_m": float(np.mean(pos_errors)),
             "vel_error_mean_mps": float(np.mean(vel_errors)),
+            "pos_prediction_error_mean_m": float(np.mean(np.linalg.norm(prediction_states[:, :3] - target_pos, axis=1))),
+            "vel_prediction_error_mean_mps": float(np.mean(np.linalg.norm(prediction_states[:, 3:] - target_vel, axis=1))),
+            "pos_error_separate_mean_m": float(np.mean(np.linalg.norm(separate_states[:, :, :3] - target_pos[None], axis=2))),
+            "vel_error_separate_mean_mps": float(np.mean(np.linalg.norm(separate_states[:, :, 3:] - target_vel[None], axis=2))),
             "num_served_ues": num_served_ues,
             "num_qos_ues": num_qos_ues,
             "aoi_mean": float(np.mean(self.aoi)),
             "u_pos_mean": float(np.mean(u_pos)),
             "u_vel_mean": float(np.mean(u_vel)),
+            "u_pos_separate_mean": float(np.mean(u_pos_sep)),
+            "u_vel_separate_mean": float(np.mean(u_vel_sep)),
             "comm_rate_mean_mbps": float(np.mean(user_rates_mbps)),
             "qos_satisfaction_rate": float(np.mean(user_rates_mbps >= self.r_min)),
             "sensing_success_prob_mean": float(np.mean(self.prob_suc)),
             "lost_target": lost_target,
         }
+        for b in range(self.num_bs):
+            info[f"u_pos_separate_bs_{b}_mean"] = float(np.mean(u_pos_sep[b]))
+            info[f"u_vel_separate_bs_{b}_mean"] = float(np.mean(u_vel_sep[b]))
         info.update(reward_info)
         return next_local_obs, next_global_state, reward, terminated, truncated, info
 
