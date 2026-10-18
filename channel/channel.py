@@ -168,7 +168,7 @@ class WirelessChannel:
         X_sigma = self.rng.normal(0.0, self.shadowing, size=(self.num_bs, self.num_targets))
         G_path = (self.wavelength ** 2 * self.rcs
                   / ((4.0 * np.pi) ** 3 * dist ** 4)
-                  * 10.0 ** (-X_sigma / 10.0))
+                  * 10.0 ** (-2.0 * X_sigma / 10.0))
         # 2. get beam gain
         beam_gain = self.compute_sensing_beamforming_gain(bs_pos, target_pos, pred_target_pos)
         # 3.small scale fading
