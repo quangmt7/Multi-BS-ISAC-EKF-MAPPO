@@ -66,6 +66,7 @@ class MultiISACEnv:
         self.alpha = float(reward_cfg["alpha_aoi"])                   
         self.beta = float(reward_cfg["beta_uncertainty"])              
         self.gamma = float(reward_cfg["gamma_power"])                 
+        self.power_budget_control = bool(mappo_cfg["action_space"].get("power_budget_control", False))
       
         self.a_max = float(norm_cfg["a_max"])                         
         self.u_pos_max = float(ekf_config["uncertainty_limits"]["u_pos_max"])
@@ -195,19 +196,17 @@ class MultiISACEnv:
         return states + errors
 
     def action_mapping(self, actions_prb, actions_pwr):
-        """
-        Map policy action outputs to PRB allocations and transmit powers.
-        
-        Args:
-            actions_prb: PRB destination choices [B, R], values in [0, M + K]
-                         0: idle, 1..M: sensing targets, M+1..M+K: communication UEs
-            actions_pwr: Normalized continuous power actions [B, R], values in [0, 1]
-            
-        Returns:
-            X_s: Sensing PRB allocation indicator [B, M, R]
-            X_c: Communication PRB allocation indicator [B, K, R]
-            P_s: Sensing power allocation [B, M, R] (W)
-            P_c: Communication power allocation [B, K, R] (W)
+        """Map PRB destinations, relative powers and an optional BS budget.
+
+        Argument:
+            (actions_prb) (array-like)[B, R]: Idle, target or UE destinations.
+            (actions_pwr) (array-like)[B, R or R+1]: Values in [0, 1]. When
+                power_budget_control is enabled, the last value is P_used/Pmax.
+        Return:
+            (allocations) (tuple): X_s, X_c, P_s and P_c arrays.
+        Note:
+            Only active PRBs share the chosen BS budget. All idle or all-zero
+            weights use zero power. The legacy mapping remains configurable.
         """
         # Convert actions to numpy arrays if needed
         if hasattr(actions_prb, "detach"):
@@ -217,6 +216,9 @@ class MultiISACEnv:
             
         actions_prb = np.asarray(actions_prb, dtype=np.int32)
         actions_pwr = np.asarray(actions_pwr, dtype=np.float32)
+        expected_power_shape = (self.num_bs, self.n_prb + int(self.power_budget_control))
+        if actions_pwr.shape != expected_power_shape:
+            raise ValueError(f"Power actions must have shape {expected_power_shape}")
         
         X_s = np.zeros((self.num_bs, self.num_targets, self.n_prb), dtype=np.float32)
         X_c = np.zeros((self.num_bs, self.num_ues, self.n_prb), dtype=np.float32)
@@ -228,7 +230,7 @@ class MultiISACEnv:
         
         for b in range(self.num_bs):
             act_prb_b = actions_prb[b]
-            raw_pwr_b = np.clip(actions_pwr[b], 0.0, 1.0)
+            raw_pwr_b = np.clip(actions_pwr[b, :self.n_prb], 0.0, 1.0)
             
             # Mask active PRBs (dest > 0: 0 is idle)
             active_mask = (act_prb_b > 0)
@@ -238,7 +240,11 @@ class MultiISACEnv:
             if np.any(active_mask):
                 # Normalize power across active PRBs only
                 sum_active_pwr = float(np.sum(raw_pwr_b[active_mask]))
-                if sum_active_pwr > 1.0:
+                if self.power_budget_control:
+                    budget = float(np.clip(actions_pwr[b, self.n_prb], 0.0, 1.0)) * self.p_max
+                    if sum_active_pwr > 0.0:
+                        pwr_allocated[active_mask] = raw_pwr_b[active_mask] / sum_active_pwr * budget
+                elif sum_active_pwr > 1.0:
                     pwr_allocated[active_mask] = (raw_pwr_b[active_mask] / sum_active_pwr) * self.p_max
                 else:
                     pwr_allocated[active_mask] = raw_pwr_b[active_mask] * self.p_max
@@ -265,7 +271,7 @@ class MultiISACEnv:
         return X_s, X_c, P_s, P_c
 
     def _compute_reward(self, P_s, P_c, user_rates, p_suc, u_pos, u_vel):
-        """Compute the objective minus normalized constraint violations.
+        """Reward signed AoI/tracking margins and penalize resource violations.
 
         Argument:
             (P_s) (array-like)[num_bs, num_target, num_prb]: Sensing powers in watts.
@@ -284,6 +290,9 @@ class MultiISACEnv:
         Note:
             Each entity's shortfall is evaluated before averaging. Surplus
             throughput does not compensate for another UE's QoS violation.
+            Signed AoI/tracking margins add a constant relative to the negative
+            objective with the same weights. This shift alone is not evidence
+            of better sensing. Uncertainty violations retain extra hinge costs.
         """
         u_pos = np.asarray(u_pos, dtype=np.float32)
         u_vel = np.asarray(u_vel, dtype=np.float32)
@@ -315,7 +324,10 @@ class MultiISACEnv:
         pen_upos = self.c3 * violation_pos
         pen_uvel = self.c4 * violation_vel
 
-        r_obj = - (self.alpha * norm_aoi + self.beta * norm_uncertainty + self.gamma * norm_power)
+        reward_aoi = self.alpha * (1.0 - norm_aoi)
+        reward_tracking = self.beta * (2.0 - norm_uncertainty)
+        penalty_power = self.gamma * norm_power
+        r_obj = reward_aoi + reward_tracking - penalty_power
         r_penalty = pen_qos + pen_sensing + pen_upos + pen_uvel
         reward = float(r_obj - r_penalty)
 
@@ -330,6 +342,9 @@ class MultiISACEnv:
             "norm_aoi": norm_aoi,
             "norm_uncertainty": norm_uncertainty,
             "norm_power": norm_power,
+            "reward_aoi": reward_aoi,
+            "reward_tracking": reward_tracking,
+            "pen_power": penalty_power,
             "violation_qos": violation_qos,
             "violation_sensing": violation_sensing,
             "violation_pos": violation_pos,
@@ -509,6 +524,14 @@ class MultiISACEnv:
             "comm_rate_mean_mbps": float(np.mean(user_rates_mbps)),
             "qos_satisfaction_rate": float(np.mean(user_rates_mbps >= self.r_min)),
             "sensing_success_prob_mean": float(np.mean(self.prob_suc)),
+            "sensing_success_prob_min": float(np.min(self.prob_suc)),
+            "sensing_threshold_satisfaction": float(np.mean(self.prob_suc >= self.p_min_sensing)),
+            "comm_rate_min_mbps": float(np.min(user_rates_mbps)),
+            "sensing_detection_rate": float(np.mean(np.any(self.detect_mask, axis=0))),
+            "sensing_prb_fraction": float(np.sum(X_s) / (self.num_bs * self.n_prb)),
+            "comm_prb_fraction": float(np.sum(X_c) / (self.num_bs * self.n_prb)),
+            "sensing_power_mean_w": float(np.sum(P_s) / self.num_bs),
+            "comm_power_mean_w": float(np.sum(P_c) / self.num_bs),
             "lost_target": lost_target,
         }
         for b in range(self.num_bs):

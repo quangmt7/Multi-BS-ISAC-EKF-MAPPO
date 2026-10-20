@@ -32,6 +32,7 @@ class RuntimeContract:
         self.num_bs = int(system["num_bs"])
         self.num_prb = int(system["num_prb_bs"])
         self.max_destination = int(system["num_target"] + system["num_ue"])
+        self.power_action_dim = self.num_prb + int(config["mappo_parameters"]["action_space"].get("power_budget_control", False))
 
     def observation_dimensions(
         self, local_observations: Any, global_state: Any
@@ -154,9 +155,10 @@ class RuntimeContract:
             raise ValueError("PRB actions must use an integer dtype")
         if np.any(actions_prb < 0) or np.any(actions_prb > self.max_destination):
             raise ValueError(f"PRB actions must be in [0, {self.max_destination}]")
-        if actions_pwr.shape != expected_shape:
+        expected_power_shape = (self.num_bs, self.power_action_dim)
+        if actions_pwr.shape != expected_power_shape:
             raise ValueError(
-                f"power action shape must be {expected_shape}, got {actions_pwr.shape}"
+                f"power action shape must be {expected_power_shape}, got {actions_pwr.shape}"
             )
         if not np.all(np.isfinite(actions_pwr)):
             raise ValueError("power actions contain NaN or Inf")

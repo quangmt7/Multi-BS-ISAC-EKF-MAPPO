@@ -240,6 +240,8 @@ class ProjectConfig:
             raise ValueError(
                 "Missing or invalid config section: mappo_parameters.action_space"
             )
+        if not isinstance(action_space.get("power_budget_control", False), bool):
+            raise ValueError("mappo_parameters.action_space.power_budget_control must be Boolean")
         expected_choices = 1 + system["num_target"] + system["num_ue"]
         configured_choices = action_space.get("num_discrete_choices", expected_choices)
         if configured_choices != expected_choices:
