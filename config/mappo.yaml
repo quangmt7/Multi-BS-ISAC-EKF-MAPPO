@@ -22,6 +22,7 @@ mappo_parameters:
   action_space:
     power_action_type: "continuous"    # Công suất liên tục (Squashed Gaussian / Beta distribution)
     power_min_watt: 0.0                # Công suất phát tối thiểu trên mỗi PRB (W)
+    power_budget_control: true          # Thêm hành động chọn tổng công suất BS, sau đó chia cho PRB
 
   # ----------------------------------------------------------------------------
   # 3. Kiến trúc mạng nơ-ron (Actor & Critic Networks)
@@ -33,6 +34,9 @@ mappo_parameters:
       use_layer_norm: true             # Chuẩn hóa Layer Normalization
       orthogonal_init: true            # Khởi tạo trọng số trực giao (Orthogonal Initialization)
       gain: 0.01                       # Hệ số gain lớp output của Actor
+      initial_sensing_fraction: 0.65    # Xác suất ban đầu cho cả nhóm target; vẫn được học tiếp
+      initial_idle_fraction: 0.02       # Xác suất idle ban đầu; phần còn lại dành cho nhóm UE
+      initial_power_fraction: 0.75      # Tâm sigmoid ban đầu của tổng công suất/Pmax
 
     critic:
 
@@ -44,24 +48,24 @@ mappo_parameters:
 
   # ----------------------------------------------------------------------------
   # 4. Trọng số hàm mục tiêu tối ưu (Objective Weights)
-  #   R_obj = - alpha * (A_bar / A_max) - beta * (U_pos / U_pos_max + U_vel / U_vel_max) - gamma * (P_used / P_max)
-  #   với alpha, beta, gamma >= 0 và alpha + beta + gamma = 1.0 
+  #   R_obj = alpha*(1-A_bar/A_max) + beta*(2-U_pos/U_pos_max-U_vel/U_vel_max)
+  #           - gamma*P_used/(B*P_max). AoI/uncertainty có cả thưởng và phạt.
+  #   Các trọng số không âm; không bắt buộc tổng bằng 1 sau khi giảm phạt công suất.
   # ----------------------------------------------------------------------------
   reward_weights:
     alpha_aoi: 0.4                     # alpha = 0.4: Trọng số của Age of Information (AoI)
     beta_uncertainty: 0.4              # beta = 0.4: Trọng số của độ bất định ước lượng EKF (pos + vel)
-    gamma_power: 0.2                   # gamma = 0.2: Trọng số của công suất phát tiêu thụ
-    # Tổng: 0.4 + 0.4 + 0.2 = 1.0
+    gamma_power: 0.05                  # Giảm phạt công suất theo thảo luận; vẫn giữ ngân sách cứng
 
   # ----------------------------------------------------------------------------
   # 5. Các giá trị chuẩn hóa (Normalization Constants)
-  # Đảm bảo từng thành phần trong hàm mục tiêu và State nằm trong khoảng [0, 1]
+  # Tham chiếu chuẩn hóa; giá trị vượt ngưỡng có thể lớn hơn 1 trong reward
   # ----------------------------------------------------------------------------
   normalization:
     a_max: 20.0                        # A_max: Ngưỡng chuẩn hóa cực đại AoI (khe thời gian)
     u_pos_max: 100.0                   # Đồng bộ ngưỡng bất định vị trí trong ekf.yaml
     u_vel_max: 100.0                   # Đồng bộ ngưỡng bất định vận tốc trong ekf.yaml
-    p_max_watt: 3.162                    # P_max: Công suất chuẩn hóa = 2.0 W
+    p_max_watt: 3.162                    # P_max: Công suất chuẩn hóa = 3.162 W
 
 
   # ----------------------------------------------------------------------------
@@ -74,11 +78,11 @@ mappo_parameters:
   # ----------------------------------------------------------------------------
   penalties:
     c1_rate_qos: 0.2                   # c1 = 0.2: Phạt khi tốc độ UE không đạt: R_k < R_k^min
-    c2_sensing_reliability: 0.2        # c2 = 0.2: Phạt khi xác suất sensing không đạt: P_m^suc < P_m^min
+    c2_sensing_reliability: 1.0        # Tăng ưu tiên đạt ngưỡng sensing, kiểm tra QoS khi đánh giá
     c3_pos_uncertainty: 0.1            # c3 = 0.1: Phạt khi bất định vị trí EKF vượt ngưỡng: U_pos > U_pos_max
     c4_vel_uncertainty: 0.1            # c4 = 0.1: Phạt khi bất định vận tốc EKF vượt ngưỡng: U_vel > U_vel_max
     penalty_rate_qos: 0.2              # Alias tương thích ngược
-    penalty_sensing_reliability: 0.2   # Alias tương thích ngược
+    penalty_sensing_reliability: 1.0   # Alias tương thích ngược
     penalty_uncertainty: 0.2           # Alias tương thích ngược
     penalty_power_budget: 0.5          # Phạt khi tổng công suất BS vượt P_b^max (ràng buộc vật lý)
 

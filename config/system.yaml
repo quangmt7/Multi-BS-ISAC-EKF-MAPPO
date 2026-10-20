@@ -4,8 +4,8 @@ system_parameters:
   # 1. Quy mô hệ thống (Network Entities & Sets)
   # ----------------------------------------------------------------------------
   num_bs: 5                            # B = 5 trạm BS
-  num_ue: 10                            # K = 15 người dùng truyền thông (UEs)
-  num_target: 5                        # M = 15 mục tiêu di động cần theo dõi (Targets)
+  num_ue: 10                            # K = 10 người dùng truyền thông (UEs)
+  num_target: 5                         # M = 5 mục tiêu di động cần theo dõi (Targets)
   num_prb_bs: 51                         # N_PRB = 51 khối tài nguyên vật lý mỗi BS (PRBs)
 
   # ----------------------------------------------------------------------------

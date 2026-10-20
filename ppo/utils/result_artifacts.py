@@ -110,6 +110,11 @@ class ResultArtifacts:
             ("policy_loss", "Policy loss", "ppo_policy_loss.png"),
             ("critic_loss", "Critic loss", "ppo_critic_loss.png"),
             ("entropy", "Policy entropy", "ppo_entropy.png"),
+            ("norm_power", "Mean BS power / Pmax", "power_utilization.png"),
+            ("sensing_threshold_satisfaction", "Target-slot fraction meeting sensing requirement", "sensing_threshold_satisfaction.png"),
+            ("comm_rate_min_mbps", "Mean per-slot minimum UE rate (Mbps)", "comm_min_rate.png"),
+            ("sensing_prb_fraction", "Fraction of all PRBs allocated to sensing", "sensing_prb_fraction.png"),
+            ("comm_prb_fraction", "Fraction of all PRBs allocated to communication", "comm_prb_fraction.png"),
         )
         for key, label, filename in metric_figures:
             if len(self._series(records, key)[0]):
