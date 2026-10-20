@@ -110,29 +110,10 @@ class ResultArtifacts:
             ("policy_loss", "Policy loss", "ppo_policy_loss.png"),
             ("critic_loss", "Critic loss", "ppo_critic_loss.png"),
             ("entropy", "Policy entropy", "ppo_entropy.png"),
-            ("norm_power", "Mean BS power / Pmax", "power_utilization.png"),
-            ("sensing_threshold_satisfaction", "Target-slot fraction meeting sensing requirement", "sensing_threshold_satisfaction.png"),
-            ("comm_rate_min_mbps", "Mean per-slot minimum UE rate (Mbps)", "comm_min_rate.png"),
-            ("sensing_prb_fraction", "Fraction of all PRBs allocated to sensing", "sensing_prb_fraction.png"),
-            ("comm_prb_fraction", "Fraction of all PRBs allocated to communication", "comm_prb_fraction.png"),
         )
         for key, label, filename in metric_figures:
             if len(self._series(records, key)[0]):
                 output_paths.append(self._metric_figure(records, key, label, filename))
-        for component, unit in (("pos", "m^2"), ("vel", "(m/s)^2")):
-            separate_key = f"u_{component}_separate_mean"
-            if not len(self._series(records, separate_key)[0]):
-                continue
-            fig, ax = plt.subplots(figsize=(10, 5))
-            for key, label in ((f"u_{component}_mean", "Common EKF"),
-                               (separate_key, "Separate EKF (mean over BSs)")):
-                ax.plot(*self._series(records, key), linewidth=1.2, label=label)
-            name = "Position" if component == "pos" else "Velocity"
-            ax.set(title=f"{name} uncertainty", xlabel="Episode",
-                   ylabel=f"Mean covariance trace ({unit})")
-            ax.grid(alpha=0.2)
-            ax.legend()
-            output_paths.append(self._save(fig, f"tracking_{component}_uncertainty.png"))
         return output_paths
 
     @staticmethod
