@@ -86,12 +86,23 @@ class MultiISACEnv:
             for b in range(self.num_bs)
         ]
 
+        # EKF common
         self.ekf_common = EKF(
             self.ekf_config["state_dim"], self.ekf_config["measurement_dim"],
             self.num_targets, self.ekf_config["dt"],
             self.ekf_config["process_noise"], 
             self.ekf_config["initial_covariance"], False
         )
+        # EKF for each BS
+        self.ekf_separate = []
+        for _ in range(self.num_bs):
+            self.ekf_separate.append(
+            EKF(
+            self.ekf_config["state_dim"], self.ekf_config["measurement_dim"],
+            self.num_targets, self.ekf_config["dt"],
+            self.ekf_config["process_noise"], 
+            self.ekf_config["initial_covariance"], False
+            ))
         
         # Initialize probability list
         self.prob_suc = np.zeros(self.num_targets)
@@ -99,15 +110,18 @@ class MultiISACEnv:
         self.detect_mask = np.zeros((self.num_bs, self.num_targets))
 
     def reset(self, seed=None):
-        """
-        Reset the environment to an initial state.
-        
-        Args:
-            seed (int, optional): Random seed for reproducibility.
-            
-        Returns:
-            local_obs_list (np.ndarray): Local observations for all BSs [B, local_obs_dim]
-            global_state (np.ndarray): Centralized state vector [global_state_dim]
+        """Reset the scenario and sample a reproducible EKF prior.
+
+        Argument:
+            (seed) (int | None): Optional episode seed.
+
+        Return:
+            (local_obs_list) (np.ndarray)[B, local_obs_dim]: Local BS observations.
+            (global_state) (np.ndarray)[global_state_dim]: Centralized observation.
+
+        Note:
+            Initial estimation errors follow the configured P0; the true target
+            states remain simulator data. Each reset restores EKF covariance.
         """
         if seed is not None:
             np.random.seed(seed)
@@ -123,10 +137,11 @@ class MultiISACEnv:
         self.ue_positions = scen_data["ue_positions"]
         self.target_states = scen_data["target_states"]
 
+        self.ekf_common.update_state(self.target_states)
         for b in range(self.num_bs):
             self.measurement_list[b].update_bs_pos(self.bs_positions[b])
-        self.ekf_common.update_state(self.target_states)
-
+            self.ekf_separate[b].update_state(self.target_states)
+        
         self.pred_target_states = self.target_states.copy()
 
         # Initialize residual resources and channel state metrics
@@ -141,6 +156,31 @@ class MultiISACEnv:
         self.prob_suc = np.zeros(self.num_targets)
         self.detect_mask = np.zeros((self.num_bs, self.num_targets))
         return local_obs_list, global_state
+
+    def _sample_initial_estimates(self, true_states, seed=None):
+        """Sample target estimates with the configured initial covariance.
+
+        Argument:
+            (true_states) (np.ndarray)[N, state_dim]: Simulated initial states.
+            (seed) (int | None): Optional episode seed for a separate prior stream.
+
+        Return:
+            (initial_estimates) (np.ndarray)[N, state_dim]: Estimates with
+                independent zero-mean Gaussian errors distributed as P0.
+
+        Note:
+            This simulator initialization does not change the ground truth.
+            Benchmark estimators should reuse copies of the sampled prior.
+        """
+        states = np.asarray(true_states, dtype=float)
+        prior_seed = np.random.SeedSequence(seed).spawn(1)[0]
+        prior_rng = np.random.default_rng(prior_seed)
+        errors = prior_rng.multivariate_normal(
+            np.zeros(self.ekf_common.state_dim),
+            self.ekf_common.p_diag_init,
+            size=states.shape[0],
+        )
+        return states + errors
 
     def action_mapping(self, actions_prb, actions_pwr):
         """
@@ -213,20 +253,25 @@ class MultiISACEnv:
         return X_s, X_c, P_s, P_c
 
     def _compute_reward(self, P_s, P_c, user_rates, p_suc, u_pos, u_vel):
-        """
-        Compute reward R_t = R_obj - R_penalty:
-        - R_obj: Minimize AoI, EKF tracking uncertainty (position + velocity), and total transmit power.
-        - R_penalty: Hinge loss penalties for constraint violations:
-            1. Communication QoS: UE rate < R_min
-            2. Sensing reliability: Sensing success probability < P_min_sensing
-            3. Target position uncertainty: EKF position uncertainty > U_pos_max
-            4. Target velocity uncertainty: EKF velocity uncertainty > U_vel_max
-            
-        Returns:
-            reward (float): Total scalar reward R_t
-            r_obj (float): Primary objective value
-            r_penalty (float): Total penalty value
-            reward_info (dict): Detailed breakdown of reward terms
+        """Compute the objective minus normalized constraint violations.
+
+        Argument:
+            (P_s) (array-like)[num_bs, num_target, num_prb]: Sensing powers in watts.
+            (P_c) (array-like)[num_bs, num_ue, num_prb]: Communication powers in watts.
+            (user_rates) (array-like)[num_ue]: User throughput in bits per second.
+            (p_suc) (array-like)[num_target]: Sensing success probabilities.
+            (u_pos) (array-like)[num_target]: Position uncertainty values.
+            (u_vel) (array-like)[num_target]: Velocity uncertainty values.
+
+        Return:
+            (reward) (float): Total reward for the slot.
+            (r_obj) (float): AoI, tracking uncertainty, and power objective.
+            (r_penalty) (float): Non-negative weighted constraint violations.
+            (reward_info) (dict[str, float]): Reward component values.
+
+        Note:
+            Each entity's shortfall is evaluated before averaging. Surplus
+            throughput does not compensate for another UE's QoS violation.
         """
         u_pos = np.asarray(u_pos, dtype=np.float32)
         u_vel = np.asarray(u_vel, dtype=np.float32)
@@ -239,16 +284,25 @@ class MultiISACEnv:
         norm_uncertainty = (float(np.mean(u_pos)) / self.u_pos_max) + (float(np.mean(u_vel)) / self.u_vel_max)
         norm_power = float(np.sum(P_s) + np.sum(P_c)) / (self.num_bs * self.p_max)
 
-        
-        # 2. Normalized penalty components: 
-        viol_qos = np.maximum(0.0, (self.r_min - user_rates_mbps) / self.r_min)
-        viol_sens = np.maximum(0.0, (self.p_min_sensing - p_suc) / self.p_min_sensing)
-        viol_upos = np.maximum(0.0, (u_pos - self.u_pos_max) / self.u_pos_max)
-        viol_uvel = np.maximum(0.0, (u_vel - self.u_vel_max) / self.u_vel_max)
-        pen_qos = self.c1 * float(np.mean(viol_qos))
-        pen_sensing = self.c2 * float(np.mean(viol_sens))
-        pen_upos = self.c3 * float(np.mean(viol_upos))
-        pen_uvel = self.c4 * float(np.mean(viol_uvel))
+        # 2. Penalize only violations, not differences beyond a satisfied limit.
+        violation_qos = float(np.mean(np.maximum(
+            0.0, (self.r_min - user_rates_mbps) / self.r_min
+        )))
+        violation_sensing = float(np.mean(np.maximum(
+            0.0, (self.p_min_sensing - p_suc) / self.p_min_sensing
+        )))
+        violation_pos = float(np.mean(np.maximum(
+            0.0, (u_pos - self.u_pos_max) / self.u_pos_max
+        )))
+        violation_vel = float(np.mean(np.maximum(
+            0.0, (u_vel - self.u_vel_max) / self.u_vel_max
+        )))
+
+        pen_qos = self.c1 * violation_qos
+        pen_sensing = self.c2 * violation_sensing
+        pen_upos = self.c3 * violation_pos
+        pen_uvel = self.c4 * violation_vel
+
         r_obj = - (self.alpha * norm_aoi + self.beta * norm_uncertainty + self.gamma * norm_power)
         r_penalty = pen_qos + pen_sensing + pen_upos + pen_uvel
         reward = float(r_obj - r_penalty)
@@ -264,6 +318,10 @@ class MultiISACEnv:
             "norm_aoi": norm_aoi,
             "norm_uncertainty": norm_uncertainty,
             "norm_power": norm_power,
+            "violation_qos": violation_qos,
+            "violation_sensing": violation_sensing,
+            "violation_pos": violation_pos,
+            "violation_vel": violation_vel,
         }
         return reward, r_obj, r_penalty, reward_info
 
@@ -368,16 +426,19 @@ class MultiISACEnv:
                         (self.bs_positions[i], measurement, covariance)
                     )
         
-        # 6. EKF state update & AoI update
+        # 6. EKF state update & AoI update (both common and separate)
         for m in range(self.num_targets):
             if measurements_by_target[m]:
                 self.ekf_common.update(m, measurements_by_target[m])
+                for b in range(self.num_bs):
+                    self.ekf_separate[b].update(m, measurements_by_target[m])
                 self.aoi[m] = 0.0  # Reset AoI upon successful detection
             else:
                 self.aoi[m] += 1.0  # Increment AoI when target is missed
                 
         # 7. Compute reward (Objective + Hinge loss penalties)
         u_pos, u_vel = self.ekf_common.get_uncer()
+        
         reward, _, _, reward_info = self._compute_reward(
             P_s=P_s,
             P_c=P_c,
@@ -386,6 +447,12 @@ class MultiISACEnv:
             u_pos=u_pos,
             u_vel=u_vel
         )          
+
+        u_pos_sep, u_vel_sep = 0, 0
+        for b in range(self.num_bs):
+            u_pos_sep1, u_vel_sep1 = self.ekf_separate[b].get_uncer()
+            u_pos_sep = min(min(u_pos_sep1), u_pos_sep)
+            u_vel_sep = min(min(u_vel_sep1), u_vel_sep)
         
         # 8. Check termination and truncation
         lost_target = bool(np.any(u_pos > self.u_pos_max) or np.any(u_vel > self.u_vel_max))
