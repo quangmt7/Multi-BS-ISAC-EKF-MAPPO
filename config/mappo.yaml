@@ -48,9 +48,9 @@ mappo_parameters:
   #   với alpha, beta, gamma >= 0 và alpha + beta + gamma = 1.0 
   # ----------------------------------------------------------------------------
   reward_weights:
-    alpha_aoi: 0.4                     # alpha = 0.4: Trọng số của Age of Information (AoI)
-    beta_uncertainty: 0.4              # beta = 0.4: Trọng số của độ bất định ước lượng EKF (pos + vel)
-    gamma_power: 0.2                   # gamma = 0.2: Trọng số của công suất phát tiêu thụ
+    alpha_aoi: 0.45                     # alpha = 0.4: Trọng số của Age of Information (AoI)
+    beta_uncertainty: 0.45              # beta = 0.4: Trọng số của độ bất định ước lượng EKF (pos + vel)
+    gamma_power: 0.10                   # gamma = 0.2: Trọng số của công suất phát tiêu thụ
     # Tổng: 0.4 + 0.4 + 0.2 = 1.0
 
   # ----------------------------------------------------------------------------
@@ -73,10 +73,10 @@ mappo_parameters:
   #   Reward = R_obj - sum_i c_i * v_i; vượt QoS không được thưởng thêm.
   # ----------------------------------------------------------------------------
   penalties:
-    c1_rate_qos: 0.2                   # c1 = 0.2: Phạt khi tốc độ UE không đạt: R_k < R_k^min
-    c2_sensing_reliability: 0.2        # c2 = 0.2: Phạt khi xác suất sensing không đạt: P_m^suc < P_m^min
-    c3_pos_uncertainty: 0.1            # c3 = 0.1: Phạt khi bất định vị trí EKF vượt ngưỡng: U_pos > U_pos_max
-    c4_vel_uncertainty: 0.1            # c4 = 0.1: Phạt khi bất định vận tốc EKF vượt ngưỡng: U_vel > U_vel_max
+    c1_rate_qos: 0.8                   # c1 = 0.2: Phạt khi tốc độ UE không đạt: R_k < R_k^min
+    c2_sensing_reliability: 2.0        # c2 = 0.2: Phạt khi xác suất sensing không đạt: P_m^suc < P_m^min
+    c3_pos_uncertainty: 0.5            # c3 = 0.1: Phạt khi bất định vị trí EKF vượt ngưỡng: U_pos > U_pos_max
+    c4_vel_uncertainty: 0.5            # c4 = 0.1: Phạt khi bất định vận tốc EKF vượt ngưỡng: U_vel > U_vel_max
     penalty_rate_qos: 0.2              # Alias tương thích ngược
     penalty_sensing_reliability: 0.2   # Alias tương thích ngược
     penalty_uncertainty: 0.2           # Alias tương thích ngược

@@ -281,7 +281,7 @@ class MultiISACEnv:
 
         # 1. Primary objective R_obj
         norm_aoi = float(np.mean(self.aoi)) / self.a_max
-        norm_uncertainty = (float(np.mean(u_pos)) / self.u_pos_max) + (float(np.mean(u_vel)) / self.u_vel_max)
+        norm_uncertainty = 0.5 * ((float(np.mean(u_pos)) / self.u_pos_max) + (float(np.mean(u_vel)) / self.u_vel_max))
         norm_power = float(np.sum(P_s) + np.sum(P_c)) / (self.num_bs * self.p_max)
 
         # 2. Penalize only violations, not differences beyond a satisfied limit.
