@@ -18,7 +18,7 @@ system_parameters:
   subcarrier_spacing_khz: 30.0         # Khoảng cách sóng mang con (SCS) = 30.0 kHz
   prb_bandwidth_khz: 360.0             # Băng thông 1 PRB: B_0 = B_PRB = 360.0 kHz
   slot_duration_ms: 10.0               # Thời lượng 1 khe thời gian: Delta t = 10.0 ms = 0.01 s
-  max_tx_power_dbm: 33.0               # Công suất phát tối đa mỗi BS: P_max = 33.0 dBm
+  max_tx_power_dbm: 40.0               # Công suất phát tối đa mỗi BS: P_max = 33.0 dBm
   max_tx_power_watt: 2.0               # P_b^{max} dạng tuyến tính = 2.0 Watt (tương ứng 33 dBm)
 
   # ----------------------------------------------------------------------------
@@ -54,9 +54,9 @@ system_parameters:
     beam_pattern_q: 2.0                # q > 0: Tham số điều khiển độ suy giảm búp sóng khi lệch hướng 
 
     # --- Can nhiễu C2S và IBI ---
-    c2s_leakage_eta0: 1.0e-3           # eta_0: Mức rò rỉ C2S tham chiếu (-30 dB)
-    c2s_leakage_alpha: 1.0             # alpha: Hệ số suy giảm leakage theo khoảng cách PRB
-    ibi_coupling_eta: 1.0e-2           # eta_IBI: Hệ số ghép nối công suất nhiễu liên trạm BS 
+    c2s_leakage_eta0: 1.0e-9           # eta_0: Mức rò rỉ C2S tham chiếu (-30 dB)
+    c2s_leakage_alpha: 1.38             # alpha: Hệ số suy giảm leakage theo khoảng cách PRB
+    ibi_coupling_eta: 1.0e-3           # eta_IBI: Hệ số ghép nối công suất nhiễu liên trạm BS 
 
   # ----------------------------------------------------------------------------
   # 5. Tham số cấu hình chi tiết cho người dùng truyền thông (UE Parameters)
@@ -89,9 +89,9 @@ system_parameters:
   # 7. Không gian kịch bản 3D (Simulation Scenario Geography)
   # ----------------------------------------------------------------------------
   scenario:
-    area_size_x_m: 1000.0              # L_x: Kích thước vùng mô phỏng trục X: 1000.0 m
-    area_size_y_m: 1000.0              # L_y: Kích thước vùng mô phỏng trục Y: 1000.0 m
-    area_size_z_m: 100.0               # L_z: Giới hạn độ cao trục Z: 100.0 m
+    area_size_x_m: 100.0              # L_x: Kích thước vùng mô phỏng trục X: 1000.0 m
+    area_size_y_m: 100.0              # L_y: Kích thước vùng mô phỏng trục Y: 1000.0 m
+    area_size_z_m: 50.0               # L_z: Giới hạn độ cao trục Z: 100.0 m
     bs_height_m: 25.0                  # Độ cao đặt antenna trạm BS: 25.0 m
     ue_height_m: 1.5                   # Độ cao thiết bị người dùng UE: 1.5 m
     target_height_min_m: 10.0          # Độ cao bay tối thiểu của target: 10.0 m
