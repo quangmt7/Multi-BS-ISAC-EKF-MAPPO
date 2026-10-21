@@ -48,14 +48,13 @@ mappo_parameters:
 
   # ----------------------------------------------------------------------------
   # 4. Trọng số hàm mục tiêu tối ưu (Objective Weights)
-  #   R_obj = alpha*(1-A_bar/A_max) + beta*(2-U_pos/U_pos_max-U_vel/U_vel_max)
-  #           - gamma*P_used/(B*P_max). AoI/uncertainty có cả thưởng và phạt.
-  #   Các trọng số không âm; không bắt buộc tổng bằng 1 sau khi giảm phạt công suất.
+  #   S = beta*(1-A_bar/A_max) + (1-beta)*(2-U_pos/U_pos_max-U_vel/U_vel_max)
+  #   C = mean_k 1[R_k >= R_min]; R_obj = alpha*S + (1-alpha)*C.
+  #   Chỉ nhân alpha và (1-alpha) một lần. Không có phạt công suất trong reward.
   # ----------------------------------------------------------------------------
   reward_weights:
-    alpha_aoi: 0.4                     # alpha = 0.4: Trọng số của Age of Information (AoI)
-    beta_uncertainty: 0.4              # beta = 0.4: Trọng số của độ bất định ước lượng EKF (pos + vel)
-    gamma_power: 0.05                  # Giảm phạt công suất theo thảo luận; vẫn giữ ngân sách cứng
+    sensing_priority_alpha: 0.8        # Alpha: trọng số mục tiêu sensing; phần UE nhận 1-alpha = 0.2
+    aoi_mix_beta: 0.5                  # Beta bên trong sensing; giữ hệ số AoI/pos/vel mỗi phần là 0.4
 
   # ----------------------------------------------------------------------------
   # 5. Các giá trị chuẩn hóa (Normalization Constants)
@@ -69,22 +68,15 @@ mappo_parameters:
 
 
   # ----------------------------------------------------------------------------
-  # 6. Phạt vi phạm ràng buộc sau khi chuẩn hóa theo từng UE/target:
-  #   v1 = mean_k max(0, 1 - R_k / R_min)
-  #   v2 = mean_m max(0, 1 - P_suc / P_min)
-  #   v3 = mean_m max(0, U_pos / U_pos_max - 1)
-  #   v4 = mean_m max(0, U_vel / U_vel_max - 1)
-  #   Reward = R_obj - sum_i c_i * v_i; vượt QoS không được thưởng thêm.
+  # 6. Ràng buộc theo trao đổi ngày 21/10/2026:
+  #   R_qos  = -c1 * mean_k max(0, 1 - R_k/R_min): chỉ phạt thiếu QoS.
+  #   R_sens =  c2 * mean_m (P_suc/P_min - 1): vừa thưởng, vừa phạt.
+  #   Reward = R_obj + R_qos + R_sens. Dùng trung bình như reward.pdf của Thuận.
+  #   Uncertainty đã có margin có dấu trong S, không phạt hinge thêm lần nữa.
   # ----------------------------------------------------------------------------
   penalties:
     c1_rate_qos: 0.2                   # c1 = 0.2: Phạt khi tốc độ UE không đạt: R_k < R_k^min
-    c2_sensing_reliability: 1.0        # Tăng ưu tiên đạt ngưỡng sensing, kiểm tra QoS khi đánh giá
-    c3_pos_uncertainty: 0.1            # c3 = 0.1: Phạt khi bất định vị trí EKF vượt ngưỡng: U_pos > U_pos_max
-    c4_vel_uncertainty: 0.1            # c4 = 0.1: Phạt khi bất định vận tốc EKF vượt ngưỡng: U_vel > U_vel_max
-    penalty_rate_qos: 0.2              # Alias tương thích ngược
-    penalty_sensing_reliability: 1.0   # Alias tương thích ngược
-    penalty_uncertainty: 0.2           # Alias tương thích ngược
-    penalty_power_budget: 0.5          # Phạt khi tổng công suất BS vượt P_b^max (ràng buộc vật lý)
+    c2_sensing_reliability: 1.0        # Hệ số của margin sensing có dấu quanh P_min
 
   # ----------------------------------------------------------------------------
   # 7. Ràng buộc chỉ tiêu QoS (QoS Thresholds)

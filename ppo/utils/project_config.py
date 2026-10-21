@@ -132,6 +132,20 @@ class ProjectConfig:
 
         mappo = self.data["mappo_parameters"]
         self._validate_interference(system, mappo)
+        weights = mappo.get("reward_weights", {})
+        penalties = mappo.get("penalties", {})
+        if not isinstance(weights, Mapping) or not isinstance(penalties, Mapping):
+            raise ValueError("reward_weights and penalties must be mappings")
+        for name in ("sensing_priority_alpha", "aoi_mix_beta"):
+            value = weights.get(name)
+            if (isinstance(value, bool) or not isinstance(value, (int, float))
+                    or not np.isfinite(value) or not 0 <= value <= 1):
+                raise ValueError(f"mappo_parameters.reward_weights.{name} must be in [0, 1]")
+        for name in ("c1_rate_qos", "c2_sensing_reliability"):
+            value = penalties.get(name)
+            if (isinstance(value, bool) or not isinstance(value, (int, float))
+                    or not np.isfinite(value) or value < 0):
+                raise ValueError(f"mappo_parameters.penalties.{name} must be finite and non-negative")
         training = mappo.get("training")
         if not isinstance(training, Mapping):
             raise ValueError(

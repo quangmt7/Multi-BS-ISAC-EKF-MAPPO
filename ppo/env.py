@@ -63,9 +63,8 @@ class MultiISACEnv:
         norm_cfg = mappo_cfg["normalization"]
         penalty_cfg = mappo_cfg["penalties"]
         
-        self.alpha = float(reward_cfg["alpha_aoi"])                   
-        self.beta = float(reward_cfg["beta_uncertainty"])              
-        self.gamma = float(reward_cfg["gamma_power"])                 
+        self.alpha = float(reward_cfg["sensing_priority_alpha"])
+        self.beta = float(reward_cfg["aoi_mix_beta"])
         self.power_budget_control = bool(mappo_cfg["action_space"].get("power_budget_control", False))
       
         self.a_max = float(norm_cfg["a_max"])                         
@@ -76,8 +75,6 @@ class MultiISACEnv:
 
         self.c1 = float(penalty_cfg["c1_rate_qos"])              
         self.c2 = float(penalty_cfg["c2_sensing_reliability"])   
-        self.c3 = float(penalty_cfg["c3_pos_uncertainty"])
-        self.c4 = float(penalty_cfg["c4_vel_uncertainty"])           
 
         self.current_step: int = 0
         self.aoi: np.ndarray = np.zeros(self.num_targets, dtype=np.float32)
@@ -271,7 +268,7 @@ class MultiISACEnv:
         return X_s, X_c, P_s, P_c
 
     def _compute_reward(self, P_s, P_c, user_rates, p_suc, u_pos, u_vel):
-        """Reward signed AoI/tracking margins and penalize resource violations.
+        """Reward sensing objectives, QoS-served UEs and signed reliability.
 
         Argument:
             (P_s) (array-like)[num_bs, num_target, num_prb]: Sensing powers in watts.
@@ -283,35 +280,39 @@ class MultiISACEnv:
 
         Return:
             (reward) (float): Total reward for the slot.
-            (r_obj) (float): AoI, tracking uncertainty, and power objective.
-            (r_penalty) (float): Non-negative weighted constraint violations.
+            (r_obj) (float): Weighted sensing and served-UE objectives.
+            (r_penalty) (float): Non-negative QoS and sensing shortfall costs.
             (reward_info) (dict[str, float]): Reward component values.
 
         Note:
-            Each entity's shortfall is evaluated before averaging. Surplus
-            throughput does not compensate for another UE's QoS violation.
-            Signed AoI/tracking margins add a constant relative to the negative
-            objective with the same weights. This shift alone is not evidence
-            of better sensing. Uncertainty violations retain extra hinge costs.
+            R = alpha*[beta*(1-A/Amax)+(1-beta)*(2-Up/Upmax-Uv/Uvmax)]
+                +(1-alpha)*mean(Rk>=Rmin)-c1*mean(max(0,1-Rk/Rmin))
+                +c2*mean(Psuc/Pmin-1).
+            Alpha and 1-alpha are each applied once. Uncertainty margins are
+            signed and have no additional hinge cost. Power is diagnostic only;
+            action_mapping still enforces the per-BS power budget. A UE is served
+            only when it meets QoS; throughput surplus earns no extra reward.
         """
         u_pos = np.asarray(u_pos, dtype=np.float32)
         u_vel = np.asarray(u_vel, dtype=np.float32)
         p_suc = np.asarray(p_suc, dtype=np.float32)
-        user_rates = np.asarray(user_rates, dtype=np.float32)
+        # Preserve rate precision at the discontinuous QoS service threshold.
+        user_rates = np.asarray(user_rates, dtype=np.float64)
         user_rates_mbps = user_rates / 1e6
 
-        # 1. Primary objective R_obj
+        # All normalization uses the same configured limits as the environment.
         norm_aoi = float(np.mean(self.aoi)) / self.a_max
         norm_uncertainty = (float(np.mean(u_pos)) / self.u_pos_max) + (float(np.mean(u_vel)) / self.u_vel_max)
         norm_power = float(np.sum(P_s) + np.sum(P_c)) / (self.num_bs * self.p_max)
+        served_ue_fraction = float(np.mean(user_rates_mbps >= self.r_min))
 
-        # 2. Penalize only violations, not differences beyond a satisfied limit.
+        # QoS is one-sided; sensing reliability has a signed margin around Pmin.
         violation_qos = float(np.mean(np.maximum(
             0.0, (self.r_min - user_rates_mbps) / self.r_min
         )))
-        violation_sensing = float(np.mean(np.maximum(
-            0.0, (self.p_min_sensing - p_suc) / self.p_min_sensing
-        )))
+        sensing_margin = p_suc / self.p_min_sensing - 1.0
+        violation_sensing = float(np.mean(np.maximum(0.0, -sensing_margin)))
+        # These uncertainty violations remain diagnostics, not extra penalties.
         violation_pos = float(np.mean(np.maximum(
             0.0, (u_pos - self.u_pos_max) / self.u_pos_max
         )))
@@ -321,30 +322,33 @@ class MultiISACEnv:
 
         pen_qos = self.c1 * violation_qos
         pen_sensing = self.c2 * violation_sensing
-        pen_upos = self.c3 * violation_pos
-        pen_uvel = self.c4 * violation_vel
+        bonus_sensing = self.c2 * float(np.mean(np.maximum(0.0, sensing_margin)))
+        r_sensing_reliability = self.c2 * float(np.mean(sensing_margin))
 
-        reward_aoi = self.alpha * (1.0 - norm_aoi)
-        reward_tracking = self.beta * (2.0 - norm_uncertainty)
-        penalty_power = self.gamma * norm_power
-        r_obj = reward_aoi + reward_tracking - penalty_power
-        r_penalty = pen_qos + pen_sensing + pen_upos + pen_uvel
-        reward = float(r_obj - r_penalty)
+        reward_aoi = self.alpha * self.beta * (1.0 - norm_aoi)
+        reward_tracking = self.alpha * (1.0 - self.beta) * (2.0 - norm_uncertainty)
+        reward_communication = (1.0 - self.alpha) * served_ue_fraction
+        r_obj = reward_aoi + reward_tracking + reward_communication
+        r_penalty = pen_qos + pen_sensing
+        r_constraints = r_sensing_reliability - pen_qos
+        reward = float(r_obj + r_constraints)
 
         reward_info = {
             "reward": reward,
             "r_obj": r_obj,
             "r_penalty": r_penalty,
+            "r_constraints": r_constraints,
             "pen_qos": pen_qos,
             "pen_sensing": pen_sensing,
-            "pen_upos": pen_upos,
-            "pen_uvel": pen_uvel,
+            "bonus_sensing": bonus_sensing,
+            "r_sensing_reliability": r_sensing_reliability,
             "norm_aoi": norm_aoi,
             "norm_uncertainty": norm_uncertainty,
             "norm_power": norm_power,
             "reward_aoi": reward_aoi,
             "reward_tracking": reward_tracking,
-            "pen_power": penalty_power,
+            "reward_communication": reward_communication,
+            "served_ue_fraction": served_ue_fraction,
             "violation_qos": violation_qos,
             "violation_sensing": violation_sensing,
             "violation_pos": violation_pos,
@@ -501,7 +505,7 @@ class MultiISACEnv:
         target_speeds = np.linalg.norm(target_vel, axis=1)
         pos_errors = np.linalg.norm(self.pred_target_states[:, :3] - target_pos, axis=1)
         vel_errors = np.linalg.norm(self.pred_target_states[:, 3:6] - target_vel, axis=1)
-        num_served_ues = float(np.sum(np.sum(X_c, axis=(0, 2)) > 0))
+        num_allocated_ues = float(np.sum(np.sum(X_c, axis=(0, 2)) > 0))
         num_qos_ues = float(np.sum(user_rates_mbps >= self.r_min))
 
         info = {
@@ -514,7 +518,8 @@ class MultiISACEnv:
             "vel_prediction_error_mean_mps": float(np.mean(np.linalg.norm(prediction_states[:, 3:] - target_vel, axis=1))),
             "pos_error_separate_mean_m": float(np.mean(np.linalg.norm(separate_states[:, :, :3] - target_pos[None], axis=2))),
             "vel_error_separate_mean_mps": float(np.mean(np.linalg.norm(separate_states[:, :, 3:] - target_vel[None], axis=2))),
-            "num_served_ues": num_served_ues,
+            "num_allocated_ues": num_allocated_ues,
+            "num_served_ues": num_qos_ues,
             "num_qos_ues": num_qos_ues,
             "aoi_mean": float(np.mean(self.aoi)),
             "u_pos_mean": float(np.mean(u_pos)),
