@@ -53,8 +53,8 @@ mappo_parameters:
   #   Chỉ nhân alpha và (1-alpha) một lần. Không có phạt công suất trong reward.
   # ----------------------------------------------------------------------------
   reward_weights:
-    sensing_priority_alpha: 0.8        # Alpha: trọng số mục tiêu sensing; phần UE nhận 1-alpha = 0.2
-    aoi_mix_beta: 0.5                  # Beta bên trong sensing; giữ hệ số AoI/pos/vel mỗi phần là 0.4
+    sensing_priority_alpha: 0.6        # Theo trao đổi 22/10: phần sensing 0.6, phần UE 1-alpha = 0.4
+    aoi_mix_beta: 0.5                  # Beta trong sensing; hệ số AoI/pos/vel mỗi phần là 0.3
 
   # ----------------------------------------------------------------------------
   # 5. Các giá trị chuẩn hóa (Normalization Constants)
