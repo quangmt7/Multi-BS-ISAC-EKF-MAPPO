@@ -294,9 +294,6 @@ class TrackingBenchmarkRunner:
         pos_pcrb = np.zeros((num_episodes, self.max_steps))
         vel_pcrb = np.zeros((num_episodes, self.max_steps))
 
-        err_joint_rmse = np.zeros((num_episodes, self.max_steps))
-        err_each_rmse = np.zeros((num_episodes, self.max_steps))
-
         comm_rate_ep = np.zeros((num_episodes, self.max_steps))
         p_suc_ep = np.zeros((num_episodes, self.max_steps))
 
@@ -437,16 +434,6 @@ class TrackingBenchmarkRunner:
                 pos_mean_bs[ep, t] = np.mean(np.mean(bs_pos_uncer, axis=0))
                 vel_mean_bs[ep, t] = np.mean(np.mean(bs_vel_uncer, axis=0))
 
-                # Compute Actual State Estimation RMSE (Target-by-target best BS)
-                joint_est = np.array([self.ekf_joint.state_list[m][:3] for m in range(self.num_targets)])
-                each_est = np.zeros((self.num_targets, 3))
-                for m in range(self.num_targets):
-                    best_b_for_m = np.argmin([bs_pos_uncer[b][m] for b in range(self.num_bs)])
-                    each_est[m] = self.ekf_separate[best_b_for_m].state_list[m][:3]
-
-                err_joint_rmse[ep, t] = np.sqrt(np.mean(np.sum((joint_est - target_pos)**2, axis=1)))
-                err_each_rmse[ep, t] = np.sqrt(np.mean(np.sum((each_est - target_pos)**2, axis=1)))
-
                 # Record Communication Throughput & Sensing Success
                 user_rates_mbps = user_rates / 1e6
                 comm_rate_ep[ep, t] = np.mean(user_rates_mbps)
@@ -463,8 +450,6 @@ class TrackingBenchmarkRunner:
             "vel_joint": np.mean(vel_joint, axis=0).tolist(),
             "vel_best_bs": np.mean(vel_best_bs, axis=0).tolist(),
             "vel_mean_bs": np.mean(vel_mean_bs, axis=0).tolist(),
-            "rmse_joint": np.mean(err_joint_rmse, axis=0).tolist(),
-            "rmse_each": np.mean(err_each_rmse, axis=0).tolist(),
             "comm_rate_mean_mbps": np.mean(comm_rate_ep, axis=0).tolist(),
             "sensing_success_prob": np.mean(p_suc_ep, axis=0).tolist(),
         }
@@ -486,12 +471,13 @@ class TrackingBenchmarkRunner:
         ax.plot(slots, results["pos_mean_bs"], label="Each-BS EKF (Average BS)", color="#ff7f0e", linestyle="-.", linewidth=1.8, alpha=0.8)
         ax.plot(slots, results["pos_best_bs"], label="Each-BS EKF (Best Local BS)", color="#d62728", linestyle="--", linewidth=2.2)
         ax.plot(slots, results["pos_joint"], label="Joint Cooperative EKF (Ours)", color="#1f77b4", linewidth=2.5)
-        ax.plot(slots, results["pos_pcrb"], label="PCRB (Theoretical Lower Bound)", color="#2ca02c", linestyle=":", linewidth=2.2)
+        ax.plot(slots, results["pos_pcrb"], label="PCRB (Theoretical Lower Bound)", color="black", linestyle="--", linewidth=2.2)
 
+        ax.set_yscale("log")
         ax.set_xlabel("Time Slot (t)", fontsize=12, fontweight="bold")
-        ax.set_ylabel(r"Position Uncertainty $\mathrm{Tr}(\mathbf{P}_{\mathrm{pos}})$ ($\mathrm{m}^2$)", fontsize=12, fontweight="bold")
-        ax.set_title("Target Position Tracking Uncertainty: PCRB vs. Joint EKF vs. Each-BS EKF", fontsize=13, fontweight="bold")
-        ax.grid(True, linestyle="--", alpha=0.5)
+        ax.set_ylabel(r"Position Uncertainty $\mathrm{Tr}(\mathbf{P}_{\mathrm{pos}})$ ($\mathrm{m}^2$) [Log Scale]", fontsize=12, fontweight="bold")
+        ax.set_title("Target Position Tracking Uncertainty: PCRB vs. Joint EKF vs. Each-BS EKF (Log Scale)", fontsize=13, fontweight="bold")
+        ax.grid(True, which="both", linestyle="--", alpha=0.5)
         ax.legend(fontsize=11, loc="upper right", frameon=True)
         fig_pos_path = os.path.join(output_dir, "tracking_pos_uncertainty_3curves.png")
         plt.savefig(fig_pos_path, bbox_inches="tight")
@@ -502,28 +488,16 @@ class TrackingBenchmarkRunner:
         ax.plot(slots, results["vel_mean_bs"], label="Each-BS EKF (Average BS)", color="#ff7f0e", linestyle="-.", linewidth=1.8, alpha=0.8)
         ax.plot(slots, results["vel_best_bs"], label="Each-BS EKF (Best Local BS)", color="#d62728", linestyle="--", linewidth=2.2)
         ax.plot(slots, results["vel_joint"], label="Joint Cooperative EKF (Ours)", color="#1f77b4", linewidth=2.5)
-        ax.plot(slots, results["vel_pcrb"], label="PCRB (Theoretical Lower Bound)", color="#2ca02c", linestyle=":", linewidth=2.2)
+        ax.plot(slots, results["vel_pcrb"], label="PCRB (Theoretical Lower Bound)", color="black", linestyle="--", linewidth=2.2)
 
+        ax.set_yscale("log")
         ax.set_xlabel("Time Slot (t)", fontsize=12, fontweight="bold")
-        ax.set_ylabel(r"Velocity Uncertainty $\mathrm{Tr}(\mathbf{P}_{\mathrm{vel}})$ ($\mathrm{m}^2/\mathrm{s}^2$)", fontsize=12, fontweight="bold")
-        ax.set_title("Target Velocity Tracking Uncertainty: PCRB vs. Joint EKF vs. Each-BS EKF", fontsize=13, fontweight="bold")
-        ax.grid(True, linestyle="--", alpha=0.5)
+        ax.set_ylabel(r"Velocity Uncertainty $\mathrm{Tr}(\mathbf{P}_{\mathrm{vel}})$ ($\mathrm{m}^2/\mathrm{s}^2$) [Log Scale]", fontsize=12, fontweight="bold")
+        ax.set_title("Target Velocity Tracking Uncertainty: PCRB vs. Joint EKF vs. Each-BS EKF (Log Scale)", fontsize=13, fontweight="bold")
+        ax.grid(True, which="both", linestyle="--", alpha=0.5)
         ax.legend(fontsize=11, loc="upper right", frameon=True)
         fig_vel_path = os.path.join(output_dir, "tracking_vel_uncertainty_3curves.png")
         plt.savefig(fig_vel_path, bbox_inches="tight")
-        plt.close()
-
-        # 4. Plot Actual Position RMSE
-        fig, ax = plt.subplots(figsize=(10, 5.5), dpi=300)
-        ax.plot(slots, results["rmse_each"], label="Each-BS EKF (Best Local BS)", color="#d62728", linestyle="--", linewidth=2.2)
-        ax.plot(slots, results["rmse_joint"], label="Joint Cooperative EKF (Ours)", color="#1f77b4", linewidth=2.5)
-        ax.set_xlabel("Time Slot (t)", fontsize=12, fontweight="bold")
-        ax.set_ylabel("Position RMSE (meters)", fontsize=12, fontweight="bold")
-        ax.set_title("Actual Tracking Error (RMSE) Comparison", fontsize=13, fontweight="bold")
-        ax.grid(True, linestyle="--", alpha=0.5)
-        ax.legend(fontsize=11, loc="upper right", frameon=True)
-        fig_rmse_path = os.path.join(output_dir, "tracking_pos_rmse_comparison.png")
-        plt.savefig(fig_rmse_path, bbox_inches="tight")
         plt.close()
 
         # Print Numerical Summary
@@ -534,16 +508,15 @@ class TrackingBenchmarkRunner:
         gap_to_pcrb = (avg_joint - avg_pcrb) / avg_pcrb * 100
 
         print("\n================ BENCHMARK NUMERICAL SUMMARY ================")
-        print(f"1. PCRB Bound Pos Uncertainty      : {avg_pcrb:.4f} m^2 (Theoretical Optimum)")
-        print(f"2. Joint Cooperative EKF Pos Uncer  : {avg_joint:.4f} m^2")
-        print(f"3. Each-BS Local EKF Pos Uncer     : {avg_best_bs:.4f} m^2")
-        print(f"--> Joint EKF reduces uncertainty by: {gain_vs_each:.2f}% compared to Each-BS EKF!")
-        print(f"--> Gap between Joint EKF and PCRB  : only {gap_to_pcrb:.2f}%!")
+        print(f"1. PCRB Bound Pos Uncertainty      : {avg_pcrb:.8f} m^2 (Theoretical Optimum)")
+        print(f"2. Joint Cooperative EKF Pos Uncer  : {avg_joint:.8f} m^2")
+        print(f"3. Each-BS Local EKF Pos Uncer     : {avg_best_bs:.8f} m^2")
+        print(f"--> Joint EKF reduces uncertainty by: {gain_vs_each:.8f}% compared to Each-BS EKF!")
+        print(f"--> Gap between Joint EKF and PCRB  : only {gap_to_pcrb:.8f}%!")
         print("=============================================================\n")
         print(f"Generated figures in {output_dir}:")
         print(f"- {fig_pos_path}")
         print(f"- {fig_vel_path}")
-        print(f"- {fig_rmse_path}")
 
 
 if __name__ == "__main__":
@@ -551,6 +524,7 @@ if __name__ == "__main__":
     parser.add_argument("--config-dir", type=str, default="d:/Lab/ISAC/isac/config")
     parser.add_argument("--checkpoint", type=str, default="d:/Lab/ISAC/isac/results/checkpoints/episode_002000.pt")
     parser.add_argument("--episodes", type=int, default=5)
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
     parser.add_argument("--out-dir", type=str, default="d:/Lab/ISAC/isac/benchmark/results")
     parser.add_argument("--heuristic", action="store_true", help="Force baseline heuristic allocation instead of policy")
     args = parser.parse_args()
@@ -559,5 +533,5 @@ if __name__ == "__main__":
         config_dir=args.config_dir,
         checkpoint_path=args.checkpoint if not args.heuristic else None
     )
-    res = runner.run_benchmark(num_episodes=args.episodes, use_heuristic=args.heuristic)
+    res = runner.run_benchmark(num_episodes=args.episodes, seed=args.seed, use_heuristic=args.heuristic)
     runner.save_and_plot(res, output_dir=args.out_dir)
