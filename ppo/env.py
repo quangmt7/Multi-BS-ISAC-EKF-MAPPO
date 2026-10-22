@@ -288,15 +288,15 @@ class MultiISACEnv:
         violation_qos = float(np.mean(np.maximum(
             0.0, (self.r_min - user_rates_mbps) / self.r_min
         )))
-        violation_sensing = float(np.mean(np.maximum(
-            0.0, (self.p_min_sensing - p_suc) / self.p_min_sensing
-        )))
-        violation_pos = float(np.mean(np.maximum(
-            0.0, (u_pos - self.u_pos_max) / self.u_pos_max
-        )))
-        violation_vel = float(np.mean(np.maximum(
-            0.0, (u_vel - self.u_vel_max) / self.u_vel_max
-        )))
+        violation_sensing = float(np.mean(
+            (self.p_min_sensing - p_suc) / self.p_min_sensing
+        ))
+        violation_pos = float(np.mean(
+            (u_pos - self.u_pos_max) / self.u_pos_max
+        ))
+        violation_vel = float(np.mean(
+            (u_vel - self.u_vel_max) / self.u_vel_max
+        ))
 
         pen_qos = self.c1 * violation_qos
         pen_sensing = self.c2 * violation_sensing
