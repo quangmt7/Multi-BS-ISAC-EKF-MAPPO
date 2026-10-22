@@ -99,8 +99,8 @@ class Actor(nn.Module):
         entropy_power = power_dist.entropy().sum(dim=-1)
 
         # result
-        total_log_prob = (logp_prb + logp_power) / self.n_prb
-        total_entropy = (entropy_prb + entropy_power) / self.n_prb
+        total_log_prob = logp_prb + logp_power
+        total_entropy = entropy_prb + entropy_power
         
         return action_prb, action_power, total_log_prob, total_entropy
 

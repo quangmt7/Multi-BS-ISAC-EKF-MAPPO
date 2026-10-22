@@ -229,8 +229,8 @@ class MultiISACEnv:
                 if sum_active_pwr > 1.0:
                     pwr_allocated[active_mask] = (raw_pwr_b[active_mask] / sum_active_pwr) * self.p_max
                 else:
-                    pwr_allocated[active_mask] = raw_pwr_b[active_mask] * self.p_max
-                    
+                    pwr_allocated[active_mask] = raw_pwr_b[active_mask] * self.p_max        
+            
             # Allocate PRBs and power to sensing (X_s, P_s) or communication (X_c, P_c)
             for r in range(self.n_prb):
                 dest = int(act_prb_b[r])
@@ -284,28 +284,33 @@ class MultiISACEnv:
         norm_uncertainty = 0.5 * ((float(np.mean(u_pos)) / self.u_pos_max) + (float(np.mean(u_vel)) / self.u_vel_max))
         norm_power = float(np.sum(P_s) + np.sum(P_c)) / (self.num_bs * self.p_max)
 
-        # 2. Penalize only violations, not differences beyond a satisfied limit.
-        violation_qos = float(np.mean(np.maximum(
-            0.0, (self.r_min - user_rates_mbps) / self.r_min
-        )))
-        violation_sensing = float(np.mean(np.maximum(
-            0.0, (self.p_min_sensing - p_suc) / self.p_min_sensing
-        )))
-        violation_pos = float(np.mean(np.maximum(
-            0.0, (u_pos - self.u_pos_max) / self.u_pos_max
-        )))
-        violation_vel = float(np.mean(np.maximum(
-            0.0, (u_vel - self.u_vel_max) / self.u_vel_max
-        )))
-
-        pen_qos = self.c1 * violation_qos
-        pen_sensing = self.c2 * violation_sensing
-        pen_upos = self.c3 * violation_pos
-        pen_uvel = self.c4 * violation_vel
+        # =========================================================================
+        # 2. QoS Truyền thông: CHỈ CHẶN SÀN, KHÔNG THƯỞNG THROUGHPUT
+        # - Kẹp trần tại 1.0: Khi R_k >= R_min -> x1_qos = 1.0
+        # - pen_qos = 0.0 khi đủ chuẩn; chỉ bị ÂM (PHẠT) khi R_k < R_min
+        # =========================================================================
+        x1_qos = float(np.mean(np.minimum(1.0, user_rates_mbps / self.r_min)))
+        pen_qos = self.c1 * (x1_qos - 1.0)
+        # =========================================================================
+        # 3. Sensing P_suc: VỪA THƯỞNG VỪA PHẠT (KHÔNG KẸP TRẦN)
+        # - Khi p_suc < 0.90 -> x2_sens < 1.0 -> pen_sensing ÂM (BỊ PHẠT)
+        # - Khi p_suc = 0.90 -> x2_sens = 1.0 -> pen_sensing = 0.0 (MỐC CHUẨN)
+        # - Khi p_suc > 0.90 -> x2_sens > 1.0 -> pen_sensing DƯƠNG (ĐƯỢC THƯỞNG!)
+        # =========================================================================
+        x2_sens = float(np.mean(p_suc / self.p_min_sensing))
+        pen_sensing = self.c2 * (x2_sens - 1.0)
+        # =========================================================================
+        # 4. Bất định EKF: VỪA THƯỞNG VỪA PHẠT
+        # - Khi u < u_max -> 1.0 - u / u_max > 0 -> pen_upos, pen_uvel DƯƠNG (ĐƯỢC THƯỞNG)
+        # - Khi u = u_max -> 1.0 - u / u_max = 0 -> pen_upos, pen_uvel = 0.0 (MỐC CHUẨN)
+        # - Khi u > u_max -> 1.0 - u / u_max < 0 -> pen_upos, pen_uvel ÂM (BỊ PHẠT)
+        # =========================================================================
+        pen_upos = self.c3 * (1.0 - float(np.mean(u_pos)) / self.u_pos_max)
+        pen_uvel = self.c4 * (1.0 - float(np.mean(u_vel)) / self.u_vel_max)
 
         r_obj = - (self.alpha * norm_aoi + self.beta * norm_uncertainty + self.gamma * norm_power)
         r_penalty = pen_qos + pen_sensing + pen_upos + pen_uvel
-        reward = float(r_obj - r_penalty)
+        reward = float(r_obj + r_penalty)
 
         reward_info = {
             "reward": reward,
@@ -318,10 +323,10 @@ class MultiISACEnv:
             "norm_aoi": norm_aoi,
             "norm_uncertainty": norm_uncertainty,
             "norm_power": norm_power,
-            "violation_qos": violation_qos,
-            "violation_sensing": violation_sensing,
-            "violation_pos": violation_pos,
-            "violation_vel": violation_vel,
+            "violation_qos": float(np.mean(np.maximum(0.0, 1.0 - user_rates_mbps / self.r_min))),
+            "violation_sensing": float(np.mean(np.maximum(0.0, 1.0 - p_suc / self.p_min_sensing))),
+            "violation_pos": float(np.mean(np.maximum(0.0, u_pos / self.u_pos_max - 1.0))),
+            "violation_vel": float(np.mean(np.maximum(0.0, u_vel / self.u_vel_max - 1.0))),
         }
         return reward, r_obj, r_penalty, reward_info
 
@@ -353,6 +358,8 @@ class MultiISACEnv:
         # 2. EKF predict (predict next target states for beamforming direction)
         for m in range(self.num_targets):
             self.ekf_common.predict(m)
+            for b in range(self.num_bs):
+                self.ekf_separate[b].predict(m)
         self.pred_target_states = np.asarray(self.ekf_common.state_list, dtype=np.float32)
         pred_target_pos = self.pred_target_states[:, :3]  # Predicted positions [M, 3]
         
@@ -430,11 +437,19 @@ class MultiISACEnv:
         for m in range(self.num_targets):
             if measurements_by_target[m]:
                 self.ekf_common.update(m, measurements_by_target[m])
-                for b in range(self.num_bs):
-                    self.ekf_separate[b].update(m, measurements_by_target[m])
                 self.aoi[m] = 0.0  # Reset AoI upon successful detection
             else:
                 self.aoi[m] += 1.0  # Increment AoI when target is missed
+
+            # Each-BS Local EKF: update ONLY with local measurements of BS b
+            for b in range(self.num_bs):
+                if self.detect_mask[b, m] == 1:
+                    meas_b = [
+                        (pos, meas, cov) for pos, meas, cov in measurements_by_target[m]
+                        if np.array_equal(pos, self.bs_positions[b])
+                    ]
+                    if meas_b:
+                        self.ekf_separate[b].update(m, meas_b)
                 
         # 7. Compute reward (Objective + Hinge loss penalties)
         u_pos, u_vel = self.ekf_common.get_uncer()
@@ -448,11 +463,12 @@ class MultiISACEnv:
             u_vel=u_vel
         )          
 
-        u_pos_sep, u_vel_sep = 0, 0
-        for b in range(self.num_bs):
-            u_pos_sep1, u_vel_sep1 = self.ekf_separate[b].get_uncer()
-            u_pos_sep = min(min(u_pos_sep1), u_pos_sep)
-            u_vel_sep = min(min(u_vel_sep1), u_vel_sep)
+        sep_pos_list = [self.ekf_separate[b].get_uncer()[0] for b in range(self.num_bs)]
+        sep_vel_list = [self.ekf_separate[b].get_uncer()[1] for b in range(self.num_bs)]
+        u_pos_best_bs = float(np.mean(np.min(sep_pos_list, axis=0)))
+        u_vel_best_bs = float(np.mean(np.min(sep_vel_list, axis=0)))
+        u_pos_mean_bs = float(np.mean(np.mean(sep_pos_list, axis=0)))
+        u_vel_mean_bs = float(np.mean(np.mean(sep_vel_list, axis=0)))
         
         # 8. Check termination and truncation
         lost_target = bool(np.any(u_pos > self.u_pos_max) or np.any(u_vel > self.u_vel_max))
@@ -484,6 +500,10 @@ class MultiISACEnv:
             "qos_satisfaction_rate": float(np.mean(user_rates_mbps >= self.r_min)),
             "sensing_success_prob_mean": float(np.mean(self.prob_suc)),
             "lost_target": lost_target,
+            "u_pos_best_local_bs": u_pos_best_bs,
+            "u_vel_best_local_bs": u_vel_best_bs,
+            "u_pos_mean_local_bs": u_pos_mean_bs,
+            "u_vel_mean_local_bs": u_vel_mean_bs,
         }
         info.update(reward_info)
         return next_local_obs, next_global_state, reward, terminated, truncated, info
