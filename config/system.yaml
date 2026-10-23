@@ -54,9 +54,9 @@ system_parameters:
     beam_pattern_q: 2.0                # q > 0: Tham số điều khiển độ suy giảm búp sóng khi lệch hướng 
 
     # --- Can nhiễu C2S và IBI ---
-    c2s_leakage_eta0: 1.0e-3           # Thử nghiệm 23/10: coupling công suất C2S = -30 dB
+    c2s_leakage_eta0: 1.0e-11          # eta_0: Coupling công suất C2S còn dư sau cách ly/triệt nhiễu (-110 dB); giả định mô phỏng
     c2s_leakage_alpha: 1.0             # alpha: Hệ số suy giảm leakage theo khoảng cách PRB
-    ibi_coupling_eta: 1.0e-3           # Thử nghiệm 23/10: coupling công suất IBI = -30 dB
+    ibi_coupling_eta: 1.0e-2           # eta_IBI: Hệ số ghép nối công suất nhiễu liên trạm BS 
 
   # ----------------------------------------------------------------------------
   # 5. Tham số cấu hình chi tiết cho người dùng truyền thông (UE Parameters)
