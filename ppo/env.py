@@ -55,7 +55,7 @@ class MultiISACEnv:
         
         self.alpha = float(reward_cfg["alpha_aoi"])                   
         self.beta = float(reward_cfg["beta_uncertainty"])              
-        self.gamma = float(reward_cfg["gamma_power"])                 
+        self.gamma = float(reward_cfg["gamma_power"])                     
       
         self.a_max = float(norm_cfg["a_max"])                         
         self.u_pos_max = float(ekf_config["uncertainty_limits"]["u_pos_max"])
@@ -63,10 +63,13 @@ class MultiISACEnv:
         self.se_comm_scale = float(np.log2(1.0 + sys_config["sinr"]["gamma_c_min_linear"]))
         self.se_sens_scale = float(np.log2(1.0 + sys_config["sinr"]["gamma_s_min_linear"]))
 
-        self.c1 = float(penalty_cfg["c1_rate_qos"])              
-        self.c2 = float(penalty_cfg["c2_sensing_reliability"])   
-        self.c3 = float(penalty_cfg["c3_pos_uncertainty"])
-        self.c4 = float(penalty_cfg["c4_vel_uncertainty"])           
+        # Hệ số phạt vi phạm ràng buộc Hinge loss:
+        # c1: Phạt QoS truyền thông (R_k < R_min)
+        # c2: Phạt suy giảm xác suất sensing (P_m^suc < P_min)
+        self.c1 = float(penalty_cfg.get("c1_rate_qos", penalty_cfg.get("c1", 0.2)))              
+        self.c2 = float(penalty_cfg.get("c2_sensing_reliability", penalty_cfg.get("c2", 0.4)))   
+        self.c3 = float(penalty_cfg.get("c3_pos_uncertainty", 0.0))
+        self.c4 = float(penalty_cfg.get("c4_vel_uncertainty", 0.0))           
 
         self.current_step: int = 0
         self.aoi: np.ndarray = np.zeros(self.num_targets, dtype=np.float32)
@@ -229,8 +232,8 @@ class MultiISACEnv:
                 if sum_active_pwr > 1.0:
                     pwr_allocated[active_mask] = (raw_pwr_b[active_mask] / sum_active_pwr) * self.p_max
                 else:
-                    pwr_allocated[active_mask] = raw_pwr_b[active_mask] * self.p_max
-                    
+                    pwr_allocated[active_mask] = raw_pwr_b[active_mask] * self.p_max        
+            
             # Allocate PRBs and power to sensing (X_s, P_s) or communication (X_c, P_c)
             for r in range(self.n_prb):
                 dest = int(act_prb_b[r])
@@ -252,76 +255,78 @@ class MultiISACEnv:
             
         return X_s, X_c, P_s, P_c
 
-    def _compute_reward(self, P_s, P_c, user_rates, p_suc, u_pos, u_vel):
+    def _compute_reward(self, P_s, P_c, user_rates, p_suc, u_pos, u_vel, X_c=None):
         """Compute the objective minus normalized constraint violations.
-
-        Argument:
-            (P_s) (array-like)[num_bs, num_target, num_prb]: Sensing powers in watts.
-            (P_c) (array-like)[num_bs, num_ue, num_prb]: Communication powers in watts.
-            (user_rates) (array-like)[num_ue]: User throughput in bits per second.
-            (p_suc) (array-like)[num_target]: Sensing success probabilities.
-            (u_pos) (array-like)[num_target]: Position uncertainty values.
-            (u_vel) (array-like)[num_target]: Velocity uncertainty values.
-
-        Return:
-            (reward) (float): Total reward for the slot.
-            (r_obj) (float): AoI, tracking uncertainty, and power objective.
-            (r_penalty) (float): Non-negative weighted constraint violations.
-            (reward_info) (dict[str, float]): Reward component values.
-
-        Note:
-            Each entity's shortfall is evaluated before averaging. Surplus
-            throughput does not compensate for another UE's QoS violation.
+        Arguments:
+            P_s (np.ndarray): Sensing transmit power matrix [num_bs, num_targets, num_prb] (Watts).
+            P_c (np.ndarray): Communication transmit power matrix [num_bs, num_ues, num_prb] (Watts).
+            user_rates (np.ndarray): Achieved data rates per UE [num_ues] (bps).
+            p_suc (np.ndarray): Detection / sensing success probabilities per target [num_targets].
+            u_pos (np.ndarray): EKF position estimation uncertainty Tr(P_pos) per target [num_targets] (m^2).
+            u_vel (np.ndarray): EKF velocity estimation uncertainty Tr(P_vel) per target [num_targets] (m^2/s^2).
+            X_c (np.ndarray, optional): Communication PRB allocation indicator [num_bs, num_ues, num_prb].
+        Returns:
+            reward (float): Scalar reward returned to PPO agent (R_t).
+            r_obj (float): Weighted objective value: alpha * R_sensing + (1 - alpha) * R_comm.
+            r_penalty (float): Total non-negative penalty value (pen_qos + pen_sensing).
+            reward_info (dict): Detailed diagnostic metrics for logging and TensorBoard:
+                - 'reward': Total scalar reward (R_t).
+                - 'r_sensing': Sensing objective score.
+                - 'r_comm': Communication QoS satisfaction ratio.
+                - 'r_penalty': Total penalty subtracted.
+                - 'pen_qos': Scaled penalty for communication rate violations.
+                - 'pen_sensing': Scaled penalty for sensing probability violations.
+                - 'norm_aoi': Normalized AoI metric (A_bar / A_max).
+                - 'norm_power': Normalized total transmit power consumed across all BSs.
+                - 'violation_qos': Average normalized QoS violation across UEs.
+                - 'violation_sensing': Average normalized sensing violation across targets.
         """
         u_pos = np.asarray(u_pos, dtype=np.float32)
         u_vel = np.asarray(u_vel, dtype=np.float32)
         p_suc = np.asarray(p_suc, dtype=np.float32)
         user_rates = np.asarray(user_rates, dtype=np.float32)
         user_rates_mbps = user_rates / 1e6
+        
+        # 1. R_sensing 
+        a_bar = float(np.mean(self.aoi))
+        u_pos_bar = float(np.mean(u_pos))
+        u_vel_bar = float(np.mean(u_vel))
 
-        # 1. Primary objective R_obj
-        norm_aoi = float(np.mean(self.aoi)) / self.a_max
-        norm_uncertainty = (float(np.mean(u_pos)) / self.u_pos_max) + (float(np.mean(u_vel)) / self.u_vel_max)
+        term_aoi = 1.0 - (a_bar / self.a_max)
+        term_uncertainty = (1.0 - (u_pos_bar / self.u_pos_max)) + (1.0 - (u_vel_bar / self.u_vel_max))
+        r_sensing = self.beta * term_aoi + (1.0 - self.beta) * term_uncertainty
         norm_power = float(np.sum(P_s) + np.sum(P_c)) / (self.num_bs * self.p_max)
+        # 2. R_communication
+        # pi_k = 1 if R_k(t) >= R_k^min
+        pi_k = (user_rates_mbps >= self.r_min).astype(np.float32)
+        r_comm = float(np.sum(pi_k) / self.num_ues)
 
-        # 2. Penalize only violations, not differences beyond a satisfied limit.
-        violation_qos = float(np.mean(np.maximum(
-            0.0, (self.r_min - user_rates_mbps) / self.r_min
-        )))
-        violation_sensing = float(np.mean(np.maximum(
-            0.0, (self.p_min_sensing - p_suc) / self.p_min_sensing
-        )))
-        violation_pos = float(np.mean(np.maximum(
-            0.0, (u_pos - self.u_pos_max) / self.u_pos_max
-        )))
-        violation_vel = float(np.mean(np.maximum(
-            0.0, (u_vel - self.u_vel_max) / self.u_vel_max
-        )))
+        # 3. R_penalty
+        # pen_qos 
+        violation_rate = np.maximum(0.0, (self.r_min - user_rates_mbps) / self.r_min)
+        pen_qos = self.c1 * float(np.sum(violation_rate))
 
-        pen_qos = self.c1 * violation_qos
-        pen_sensing = self.c2 * violation_sensing
-        pen_upos = self.c3 * violation_pos
-        pen_uvel = self.c4 * violation_vel
+        # pen_sensing
+        violation_sensing = np.maximum(0.0, (self.p_min_sensing - p_suc) / self.p_min_sensing)
+        pen_sensing = self.c2 * float(np.sum(violation_sensing))
 
-        r_obj = - (self.alpha * norm_aoi + self.beta * norm_uncertainty + self.gamma * norm_power)
-        r_penalty = pen_qos + pen_sensing + pen_upos + pen_uvel
-        reward = float(r_obj - r_penalty)
+        r_penalty = pen_qos + pen_sensing
+
+        # 4. Total reward
+        r_obj = self.alpha * r_sensing + (1.0 - self.alpha) * r_comm
+        reward = float(self.alpha * r_sensing + (1.0 - self.alpha) * r_comm - r_penalty)
 
         reward_info = {
             "reward": reward,
-            "r_obj": r_obj,
+            "r_sensing": r_sensing,
+            "r_comm": r_comm,
             "r_penalty": r_penalty,
             "pen_qos": pen_qos,
             "pen_sensing": pen_sensing,
-            "pen_upos": pen_upos,
-            "pen_uvel": pen_uvel,
-            "norm_aoi": norm_aoi,
-            "norm_uncertainty": norm_uncertainty,
+            "norm_aoi": float(1- term_aoi),
             "norm_power": norm_power,
-            "violation_qos": violation_qos,
-            "violation_sensing": violation_sensing,
-            "violation_pos": violation_pos,
-            "violation_vel": violation_vel,
+            "violation_qos": float(np.mean(violation_rate)),
+            "violation_sensing": float(np.mean(violation_sensing)),
         }
         return reward, r_obj, r_penalty, reward_info
 
@@ -353,6 +358,8 @@ class MultiISACEnv:
         # 2. EKF predict (predict next target states for beamforming direction)
         for m in range(self.num_targets):
             self.ekf_common.predict(m)
+            for b in range(self.num_bs):
+                self.ekf_separate[b].predict(m)
         self.pred_target_states = np.asarray(self.ekf_common.state_list, dtype=np.float32)
         pred_target_pos = self.pred_target_states[:, :3]  # Predicted positions [M, 3]
         
@@ -430,11 +437,19 @@ class MultiISACEnv:
         for m in range(self.num_targets):
             if measurements_by_target[m]:
                 self.ekf_common.update(m, measurements_by_target[m])
-                for b in range(self.num_bs):
-                    self.ekf_separate[b].update(m, measurements_by_target[m])
                 self.aoi[m] = 0.0  # Reset AoI upon successful detection
             else:
                 self.aoi[m] += 1.0  # Increment AoI when target is missed
+
+            # Each-BS Local EKF: update ONLY with local measurements of BS b
+            for b in range(self.num_bs):
+                if self.detect_mask[b, m] == 1:
+                    meas_b = [
+                        (pos, meas, cov) for pos, meas, cov in measurements_by_target[m]
+                        if np.array_equal(pos, self.bs_positions[b])
+                    ]
+                    if meas_b:
+                        self.ekf_separate[b].update(m, meas_b)
                 
         # 7. Compute reward (Objective + Hinge loss penalties)
         u_pos, u_vel = self.ekf_common.get_uncer()
@@ -445,14 +460,16 @@ class MultiISACEnv:
             user_rates=user_rates,
             p_suc=self.prob_suc,
             u_pos=u_pos,
-            u_vel=u_vel
+            u_vel=u_vel,
+            X_c=X_c
         )          
 
-        u_pos_sep, u_vel_sep = 0, 0
-        for b in range(self.num_bs):
-            u_pos_sep1, u_vel_sep1 = self.ekf_separate[b].get_uncer()
-            u_pos_sep = min(min(u_pos_sep1), u_pos_sep)
-            u_vel_sep = min(min(u_vel_sep1), u_vel_sep)
+        sep_pos_list = [self.ekf_separate[b].get_uncer()[0] for b in range(self.num_bs)]
+        sep_vel_list = [self.ekf_separate[b].get_uncer()[1] for b in range(self.num_bs)]
+        u_pos_best_bs = float(np.mean(np.min(sep_pos_list, axis=0)))
+        u_vel_best_bs = float(np.mean(np.min(sep_vel_list, axis=0)))
+        u_pos_mean_bs = float(np.mean(np.mean(sep_pos_list, axis=0)))
+        u_vel_mean_bs = float(np.mean(np.mean(sep_vel_list, axis=0)))
         
         # 8. Check termination and truncation
         lost_target = bool(np.any(u_pos > self.u_pos_max) or np.any(u_vel > self.u_vel_max))
@@ -484,6 +501,10 @@ class MultiISACEnv:
             "qos_satisfaction_rate": float(np.mean(user_rates_mbps >= self.r_min)),
             "sensing_success_prob_mean": float(np.mean(self.prob_suc)),
             "lost_target": lost_target,
+            "u_pos_best_local_bs": u_pos_best_bs,
+            "u_vel_best_local_bs": u_vel_best_bs,
+            "u_pos_mean_local_bs": u_pos_mean_bs,
+            "u_vel_mean_local_bs": u_vel_mean_bs,
         }
         info.update(reward_info)
         return next_local_obs, next_global_state, reward, terminated, truncated, info
