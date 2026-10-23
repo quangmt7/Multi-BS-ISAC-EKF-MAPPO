@@ -132,20 +132,6 @@ class ProjectConfig:
 
         mappo = self.data["mappo_parameters"]
         self._validate_interference(system, mappo)
-        weights = mappo.get("reward_weights", {})
-        penalties = mappo.get("penalties", {})
-        if not isinstance(weights, Mapping) or not isinstance(penalties, Mapping):
-            raise ValueError("reward_weights and penalties must be mappings")
-        for name in ("sensing_priority_alpha", "aoi_mix_beta"):
-            value = weights.get(name)
-            if (isinstance(value, bool) or not isinstance(value, (int, float))
-                    or not np.isfinite(value) or not 0 <= value <= 1):
-                raise ValueError(f"mappo_parameters.reward_weights.{name} must be in [0, 1]")
-        for name in ("c1_rate_qos", "c2_sensing_reliability"):
-            value = penalties.get(name)
-            if (isinstance(value, bool) or not isinstance(value, (int, float))
-                    or not np.isfinite(value) or value < 0):
-                raise ValueError(f"mappo_parameters.penalties.{name} must be finite and non-negative")
         training = mappo.get("training")
         if not isinstance(training, Mapping):
             raise ValueError(
@@ -254,8 +240,6 @@ class ProjectConfig:
             raise ValueError(
                 "Missing or invalid config section: mappo_parameters.action_space"
             )
-        if not isinstance(action_space.get("power_budget_control", False), bool):
-            raise ValueError("mappo_parameters.action_space.power_budget_control must be Boolean")
         expected_choices = 1 + system["num_target"] + system["num_ue"]
         configured_choices = action_space.get("num_discrete_choices", expected_choices)
         if configured_choices != expected_choices:

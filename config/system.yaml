@@ -4,8 +4,8 @@ system_parameters:
   # 1. Quy mô hệ thống (Network Entities & Sets)
   # ----------------------------------------------------------------------------
   num_bs: 5                            # B = 5 trạm BS
-  num_ue: 10                            # K = 10 người dùng truyền thông (UEs)
-  num_target: 5                         # M = 5 mục tiêu di động cần theo dõi (Targets)
+  num_ue: 10                            # K = 15 người dùng truyền thông (UEs)
+  num_target: 5                        # M = 15 mục tiêu di động cần theo dõi (Targets)
   num_prb_bs: 51                         # N_PRB = 51 khối tài nguyên vật lý mỗi BS (PRBs)
 
   # ----------------------------------------------------------------------------
@@ -89,13 +89,13 @@ system_parameters:
   # 7. Không gian kịch bản 3D (Simulation Scenario Geography)
   # ----------------------------------------------------------------------------
   scenario:
-    area_size_x_m: 200.0              # L_x: Kích thước vùng mô phỏng trục X: 200 m
-    area_size_y_m: 200.0              # L_y: Kích thước vùng mô phỏng trục Y: 200 m
-    area_size_z_m: 50.0               # L_z: Giới hạn độ cao trục Z: 50 m
+    area_size_x_m: 100.0              # L_x: Kích thước vùng mô phỏng trục X: 1000.0 m
+    area_size_y_m: 100.0              # L_y: Kích thước vùng mô phỏng trục Y: 1000.0 m
+    area_size_z_m: 50.0               # L_z: Giới hạn độ cao trục Z: 100.0 m
     bs_height_m: 25.0                  # Độ cao đặt antenna trạm BS: 25.0 m
     ue_height_m: 1.5                   # Độ cao thiết bị người dùng UE: 1.5 m
     target_height_min_m: 10.0          # Độ cao bay tối thiểu của target: 10.0 m
-    target_height_max_m: 50.0          # Độ cao target không vượt giới hạn Z của vùng mô phỏng
+    target_height_max_m: 60.0          # Độ cao bay tối đa của target: 60.0 m
     target_velocity_min_mps: 5.0       # Vận tốc tối thiểu của target: 5.0 m/s (~18 km/h)
     target_velocity_max_mps: 25.0      # Vận tốc tối đa của target: 25.0 m/s (~90 km/h)
 

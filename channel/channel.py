@@ -4,13 +4,6 @@ import numpy as np
 class WirelessChannel:
       
     def __init__ (self, config):
-         """Initialize the physical channel and diagnostic storage.
-
-         Argument:
-             (config) (dict): System geometry, antenna and interference settings.
-         Return:
-             (None).
-         """
          self.config= config
          sys_config= config.get("system_parameters")
          channel_config = sys_config.get("channel_and_interference")
@@ -41,7 +34,7 @@ class WirelessChannel:
         # beamforming
          self.g_max = self.g_tx
          self.g_ant = float(sys_config["ue_parameters"]["antenna_gain_rx_linear"])
-         
+
         # Coupling factors
          self.c2s_eta0 = float(channel_config["c2s_leakage_eta0"])
          self.c2s_alpha = float(channel_config["c2s_leakage_alpha"])
@@ -55,11 +48,10 @@ class WirelessChannel:
          prb_indices = np.arange(self.n_prb)
          prb_dist = np.abs(prb_indices[:, np.newaxis] - prb_indices[np.newaxis, :])
          self.c2s_matrix = (self.c2s_eta0 * np.exp(-self.c2s_alpha * prb_dist)).astype(np.float32)
-        
+
         #rng
          seed = sim_config.get("seed", self.config.get("seed", 42))
          self.rng = np.random.default_rng(seed)
-         self.last_sensing_diagnostics = {}
      
     def compute_comm_beamforming_gain(
         self, bs_pos, ue_pos, pred_ue_pos = None
@@ -155,21 +147,14 @@ class WirelessChannel:
         return comm_gain.astype(np.float32)
     
     def get_sensing_channel_gain(self, bs_pos, target_pos, pred_target_pos) -> np.ndarray:
-        """Compute monostatic echo power gain including antennas and fading.
-
+        """
+        Compute effective sensing channel gain G_{b,m}^s
         Argument:
-            (bs_pos) (np.ndarray)[B, 3]: BS positions in meters.
-            (target_pos) (np.ndarray)[M, 3]: True target positions in meters.
-            (pred_target_pos) (np.ndarray | None)[M, 3]: Steering positions.
+            bs_pos (numpy.ndarray)[B, 3]: 3D positions of Base Stations.
+            target_pos (numpy.ndarray)[M, 3]: True 3D positions of targets.
+            pred_target_pos (numpy.ndarray)[M, 3]: Predicted target positions from EKF 
         Return:
-            (sensing_gain) (np.ndarray)[B, M, R]: Dimensionless power gain.
-        Note:
-            G_path = lambda^2 * RCS / ((4*pi)^3 * d^4) is already two-way.
-            It must not be squared again or multiplied by a communication path
-            loss. The upstream model squares beam_gain to include matched TX/RX
-            antenna patterns; it assumes identical transmit and receive arrays.
-            The factor 10^(-2*X/10) assumes the same one-way shadowing on both
-            paths. Squaring the fading amplitude below is not another path loss.
+            sensing_gain (numpy.ndarray)[B, M]: Effective radar channel gain.
         """
         diff = bs_pos[:, np.newaxis, :] - target_pos[np.newaxis, :, :]  # (B, M, 3)
         dist = np.sqrt(np.sum(diff ** 2, axis=-1))  # (B, M)
@@ -208,20 +193,17 @@ class WirelessChannel:
         comm_power = np.sum(P_c, axis=1)
         c2s_interf = np.dot(comm_power, self.c2s_matrix)[:, np.newaxis, :]
         return c2s_interf 
- 
- 
+    
+
     def compute_ibi_interference(self, X_s: np.ndarray, P_s: np.ndarray, bs_position: np.ndarray) -> np.ndarray:
-        """Compute direct BS-to-BS radar interference on each PRB.
- 
-        Argument:
-            (X_s) (np.ndarray)[B, M, R]: Sensing allocation indicators.
-            (P_s) (np.ndarray)[B, M, R]: Sensing powers in watts.
-            (bs_position) (np.ndarray)[B, 3]: BS coordinates in meters.
+        """
+        Compute Inter-Base-Station Interference (IBI) 
+        eta_IBI = 10^(-2) = 0.01
+        X_s, P_s: (B, M, R)
+        bs_position: (B, 3)
+
         Return:
-            (ibi_interf) (np.ndarray)[B, 1, R]: Received interference in watts.
-        Note:
-            Uses upstream free-space BS links with configured shadowing and
-            residual coupling. A BS never contributes interference to itself.
+            IBI power at each receiving BS: (B, 1, R), in watt.
         """
         # Công suất radar phát thực tế của từng BS trên mỗi PRB
         p_radar = X_s * P_s                    # (B, M, R)
@@ -250,7 +232,7 @@ class WirelessChannel:
         )                                       # (B, B)
 
         # Optional log-normal shadowing.
-        # self.shadowing is the configured standard deviation in dB.
+        # self.ibi_shadowing_db is the shadowing standard deviation in dB.
         if self.shadowing > 0:
             shadow_db = self.rng.normal(
                 0.0, self.shadowing, size=(B, B)
@@ -268,7 +250,7 @@ class WirelessChannel:
         ibi_interf = path_gain.T @ p_bs         # (B, R)
 
         return ibi_interf[:, np.newaxis, :].astype(np.float32)
-
+ 
 
  
     def get_sensing_sinr(
@@ -295,16 +277,16 @@ class WirelessChannel:
             sensing_sinr_prb (numpy.ndarray)[B, M, R]: Instantaneous radar sensing SINR per PRB gamma_{b,m,r}^s.
 
         """
-
+        
         # 1. G^s 
         sensing_gain = self.get_sensing_channel_gain(bs_pos, target_pos, pred_target_pos)
-
+        
         signal_sensing = P_s * sensing_gain  # (B, M, R)
-
+        
 
         c2s_interf = self.compute_c2s_interference(P_c)
 
-        ibi_interf = self.compute_ibi_interference(X_s, P_s, bs_pos)
+        ibi_interf = self.compute_ibi_interference(X_s, P_s, bs_pos)    
 
         total_interf = self.noise_power + c2s_interf + ibi_interf
 
@@ -313,21 +295,7 @@ class WirelessChannel:
             signal_sensing / np.maximum(total_interf, 1e-16),
             0.0
         ).astype(np.float32)
-        # Average powers on active sensing links only; these diagnostics do not
-        # rescale the physical model or consume extra channel realizations.
-        active = (X_s == 1) & (P_s > 0)
-        active_count = max(int(np.count_nonzero(active)), 1)
-        quantities = {
-            "sensing_signal_mean_w": signal_sensing,
-            "sensing_c2s_mean_w": c2s_interf,
-            "sensing_ibi_mean_w": ibi_interf,
-            "sensing_gain_active_mean": sensing_gain,
-        }
-        self.last_sensing_diagnostics = {
-            name: float(np.sum(np.where(active, value, 0.0), dtype=np.float64) / active_count)
-            for name, value in quantities.items()
-        }
-        self.last_sensing_diagnostics["sensing_noise_per_prb_w"] = self.noise_power
+        
         # 5. Gamma_{b,m}^s 
         effective_sensing_sinr = np.sum(sensing_sinr_prb, axis=2).astype(np.float32)
 
@@ -349,7 +317,7 @@ class WirelessChannel:
         """
         Simulate physical channel: compute comm channel gain and sensing SINR.
         """
-
+        
         # 1. effective communication gain  G^c: (B, K, R)
         comm_gain = self.get_comm_channel_gain(bs_pos, ue_pos, pred_ue_pos)
         # 2. Sensing SINR radar 

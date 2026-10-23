@@ -15,16 +15,6 @@ class MultiISACEnv:
     """
     
     def __init__(self, config: dict):
-        """Initialize the shared controller and independent per-BS estimators.
-
-        Argument:
-            (config) (dict): Validated system, EKF and MAPPO configuration.
-        Return:
-            (None).
-        Note:
-            The common filter controls observations, beam steering and reward.
-            Separate filters are diagnostic baselines on the same measurements.
-        """
         self.config = config
 
         # 1. System parameters
@@ -63,9 +53,9 @@ class MultiISACEnv:
         norm_cfg = mappo_cfg["normalization"]
         penalty_cfg = mappo_cfg["penalties"]
         
-        self.alpha = float(reward_cfg["sensing_priority_alpha"])
-        self.beta = float(reward_cfg["aoi_mix_beta"])
-        self.power_budget_control = bool(mappo_cfg["action_space"].get("power_budget_control", False))
+        self.alpha = float(reward_cfg["alpha_aoi"])                   
+        self.beta = float(reward_cfg["beta_uncertainty"])              
+        self.gamma = float(reward_cfg["gamma_power"])                     
       
         self.a_max = float(norm_cfg["a_max"])                         
         self.u_pos_max = float(ekf_config["uncertainty_limits"]["u_pos_max"])
@@ -73,8 +63,13 @@ class MultiISACEnv:
         self.se_comm_scale = float(np.log2(1.0 + sys_config["sinr"]["gamma_c_min_linear"]))
         self.se_sens_scale = float(np.log2(1.0 + sys_config["sinr"]["gamma_s_min_linear"]))
 
-        self.c1 = float(penalty_cfg["c1_rate_qos"])              
-        self.c2 = float(penalty_cfg["c2_sensing_reliability"])   
+        # Hệ số phạt vi phạm ràng buộc Hinge loss:
+        # c1: Phạt QoS truyền thông (R_k < R_min)
+        # c2: Phạt suy giảm xác suất sensing (P_m^suc < P_min)
+        self.c1 = float(penalty_cfg.get("c1_rate_qos", penalty_cfg.get("c1", 0.2)))              
+        self.c2 = float(penalty_cfg.get("c2_sensing_reliability", penalty_cfg.get("c2", 0.4)))   
+        self.c3 = float(penalty_cfg.get("c3_pos_uncertainty", 0.0))
+        self.c4 = float(penalty_cfg.get("c4_vel_uncertainty", 0.0))           
 
         self.current_step: int = 0
         self.aoi: np.ndarray = np.zeros(self.num_targets, dtype=np.float32)
@@ -102,15 +97,15 @@ class MultiISACEnv:
             self.ekf_config["initial_covariance"], False
         )
         # EKF for each BS
-        self.ekf_separate = [
+        self.ekf_separate = []
+        for _ in range(self.num_bs):
+            self.ekf_separate.append(
             EKF(
-                self.ekf_config["state_dim"], self.ekf_config["measurement_dim"],
-                self.num_targets, self.ekf_config["dt"],
-                self.ekf_config["process_noise"],
-                self.ekf_config["initial_covariance"], True,
-            )
-            for _ in range(self.num_bs)
-        ]
+            self.ekf_config["state_dim"], self.ekf_config["measurement_dim"],
+            self.num_targets, self.ekf_config["dt"],
+            self.ekf_config["process_noise"], 
+            self.ekf_config["initial_covariance"], False
+            ))
         
         # Initialize probability list
         self.prob_suc = np.zeros(self.num_targets)
@@ -135,7 +130,6 @@ class MultiISACEnv:
             np.random.seed(seed)
             if hasattr(self.channel, "rng"):
                 self.channel.rng = np.random.default_rng(seed)
-        self.channel.last_sensing_diagnostics = {}
             
         self.current_step = 0
         self.aoi = np.zeros(self.num_targets, dtype=np.float32)
@@ -146,13 +140,12 @@ class MultiISACEnv:
         self.ue_positions = scen_data["ue_positions"]
         self.target_states = scen_data["target_states"]
 
-        self.initial_estimates = self._sample_initial_estimates(self.target_states, seed)
-        self.ekf_common.update_state(self.initial_estimates)
+        self.ekf_common.update_state(self.target_states)
         for b in range(self.num_bs):
             self.measurement_list[b].update_bs_pos(self.bs_positions[b])
-            self.ekf_separate[b].update_state(self.initial_estimates)
+            self.ekf_separate[b].update_state(self.target_states)
         
-        self.pred_target_states = self.initial_estimates.astype(np.float32, copy=True)
+        self.pred_target_states = self.target_states.copy()
 
         # Initialize residual resources and channel state metrics
         self.p_res = np.full(self.num_bs, self.p_max, dtype=np.float32)
@@ -193,17 +186,19 @@ class MultiISACEnv:
         return states + errors
 
     def action_mapping(self, actions_prb, actions_pwr):
-        """Map PRB destinations, relative powers and an optional BS budget.
-
-        Argument:
-            (actions_prb) (array-like)[B, R]: Idle, target or UE destinations.
-            (actions_pwr) (array-like)[B, R or R+1]: Values in [0, 1]. When
-                power_budget_control is enabled, the last value is P_used/Pmax.
-        Return:
-            (allocations) (tuple): X_s, X_c, P_s and P_c arrays.
-        Note:
-            Only active PRBs share the chosen BS budget. All idle or all-zero
-            weights use zero power. The legacy mapping remains configurable.
+        """
+        Map policy action outputs to PRB allocations and transmit powers.
+        
+        Args:
+            actions_prb: PRB destination choices [B, R], values in [0, M + K]
+                         0: idle, 1..M: sensing targets, M+1..M+K: communication UEs
+            actions_pwr: Normalized continuous power actions [B, R], values in [0, 1]
+            
+        Returns:
+            X_s: Sensing PRB allocation indicator [B, M, R]
+            X_c: Communication PRB allocation indicator [B, K, R]
+            P_s: Sensing power allocation [B, M, R] (W)
+            P_c: Communication power allocation [B, K, R] (W)
         """
         # Convert actions to numpy arrays if needed
         if hasattr(actions_prb, "detach"):
@@ -213,9 +208,6 @@ class MultiISACEnv:
             
         actions_prb = np.asarray(actions_prb, dtype=np.int32)
         actions_pwr = np.asarray(actions_pwr, dtype=np.float32)
-        expected_power_shape = (self.num_bs, self.n_prb + int(self.power_budget_control))
-        if actions_pwr.shape != expected_power_shape:
-            raise ValueError(f"Power actions must have shape {expected_power_shape}")
         
         X_s = np.zeros((self.num_bs, self.num_targets, self.n_prb), dtype=np.float32)
         X_c = np.zeros((self.num_bs, self.num_ues, self.n_prb), dtype=np.float32)
@@ -227,7 +219,7 @@ class MultiISACEnv:
         
         for b in range(self.num_bs):
             act_prb_b = actions_prb[b]
-            raw_pwr_b = np.clip(actions_pwr[b, :self.n_prb], 0.0, 1.0)
+            raw_pwr_b = np.clip(actions_pwr[b], 0.0, 1.0)
             
             # Mask active PRBs (dest > 0: 0 is idle)
             active_mask = (act_prb_b > 0)
@@ -237,15 +229,11 @@ class MultiISACEnv:
             if np.any(active_mask):
                 # Normalize power across active PRBs only
                 sum_active_pwr = float(np.sum(raw_pwr_b[active_mask]))
-                if self.power_budget_control:
-                    budget = float(np.clip(actions_pwr[b, self.n_prb], 0.0, 1.0)) * self.p_max
-                    if sum_active_pwr > 0.0:
-                        pwr_allocated[active_mask] = raw_pwr_b[active_mask] / sum_active_pwr * budget
-                elif sum_active_pwr > 1.0:
+                if sum_active_pwr > 1.0:
                     pwr_allocated[active_mask] = (raw_pwr_b[active_mask] / sum_active_pwr) * self.p_max
                 else:
-                    pwr_allocated[active_mask] = raw_pwr_b[active_mask] * self.p_max
-                    
+                    pwr_allocated[active_mask] = raw_pwr_b[active_mask] * self.p_max        
+            
             # Allocate PRBs and power to sensing (X_s, P_s) or communication (X_c, P_c)
             for r in range(self.n_prb):
                 dest = int(act_prb_b[r])
@@ -267,108 +255,96 @@ class MultiISACEnv:
             
         return X_s, X_c, P_s, P_c
 
-    def _compute_reward(self, P_s, P_c, user_rates, p_suc, u_pos, u_vel):
-        """Reward sensing objectives, QoS-served UEs and signed reliability.
-
-        Argument:
-            (P_s) (array-like)[num_bs, num_target, num_prb]: Sensing powers in watts.
-            (P_c) (array-like)[num_bs, num_ue, num_prb]: Communication powers in watts.
-            (user_rates) (array-like)[num_ue]: User throughput in bits per second.
-            (p_suc) (array-like)[num_target]: Sensing success probabilities.
-            (u_pos) (array-like)[num_target]: Position uncertainty values.
-            (u_vel) (array-like)[num_target]: Velocity uncertainty values.
-
-        Return:
-            (reward) (float): Total reward for the slot.
-            (r_obj) (float): Weighted sensing and served-UE objectives.
-            (r_penalty) (float): Non-negative QoS and sensing shortfall costs.
-            (reward_info) (dict[str, float]): Reward component values.
-
-        Note:
-            R = alpha*[beta*(1-A/Amax)+(1-beta)*(2-Up/Upmax-Uv/Uvmax)]
-                +(1-alpha)*mean(Rk>=Rmin)-c1*mean(max(0,1-Rk/Rmin))
-                +c2*mean(Psuc/Pmin-1).
-            Alpha and 1-alpha are each applied once. Uncertainty margins are
-            signed and have no additional hinge cost. Power is diagnostic only;
-            action_mapping still enforces the per-BS power budget. A UE is served
-            only when it meets QoS; throughput surplus earns no extra reward.
+    def _compute_reward(self, P_s, P_c, user_rates, p_suc, u_pos, u_vel, X_c=None):
+        """Compute the objective minus normalized constraint violations.
+        Arguments:
+            P_s (np.ndarray): Sensing transmit power matrix [num_bs, num_targets, num_prb] (Watts).
+            P_c (np.ndarray): Communication transmit power matrix [num_bs, num_ues, num_prb] (Watts).
+            user_rates (np.ndarray): Achieved data rates per UE [num_ues] (bps).
+            p_suc (np.ndarray): Detection / sensing success probabilities per target [num_targets].
+            u_pos (np.ndarray): EKF position estimation uncertainty Tr(P_pos) per target [num_targets] (m^2).
+            u_vel (np.ndarray): EKF velocity estimation uncertainty Tr(P_vel) per target [num_targets] (m^2/s^2).
+            X_c (np.ndarray, optional): Communication PRB allocation indicator [num_bs, num_ues, num_prb].
+        Returns:
+            reward (float): Scalar reward returned to PPO agent (R_t).
+            r_obj (float): Weighted objective value: alpha * R_sensing + (1 - alpha) * R_comm.
+            r_penalty (float): Total non-negative penalty value (pen_qos + pen_sensing).
+            reward_info (dict): Detailed diagnostic metrics for logging and TensorBoard:
+                - 'reward': Total scalar reward (R_t).
+                - 'r_sensing': Sensing objective score.
+                - 'r_comm': Communication QoS satisfaction ratio.
+                - 'r_penalty': Total penalty subtracted.
+                - 'pen_qos': Scaled penalty for communication rate violations.
+                - 'pen_sensing': Scaled penalty for sensing probability violations.
+                - 'norm_aoi': Normalized AoI metric (A_bar / A_max).
+                - 'norm_power': Normalized total transmit power consumed across all BSs.
+                - 'violation_qos': Average normalized QoS violation across UEs.
+                - 'violation_sensing': Average normalized sensing violation across targets.
         """
         u_pos = np.asarray(u_pos, dtype=np.float32)
         u_vel = np.asarray(u_vel, dtype=np.float32)
         p_suc = np.asarray(p_suc, dtype=np.float32)
-        # Preserve rate precision at the discontinuous QoS service threshold.
-        user_rates = np.asarray(user_rates, dtype=np.float64)
+        user_rates = np.asarray(user_rates, dtype=np.float32)
         user_rates_mbps = user_rates / 1e6
+        
+        # 1. R_sensing 
+        a_bar = float(np.mean(self.aoi))
+        u_pos_bar = float(np.mean(u_pos))
+        u_vel_bar = float(np.mean(u_vel))
 
-        # All normalization uses the same configured limits as the environment.
-        norm_aoi = float(np.mean(self.aoi)) / self.a_max
-        norm_uncertainty = (float(np.mean(u_pos)) / self.u_pos_max) + (float(np.mean(u_vel)) / self.u_vel_max)
+        term_aoi = 1.0 - (a_bar / self.a_max)
+        term_uncertainty = (1.0 - (u_pos_bar / self.u_pos_max)) + (1.0 - (u_vel_bar / self.u_vel_max))
+        r_sensing = self.beta * term_aoi + (1.0 - self.beta) * term_uncertainty
         norm_power = float(np.sum(P_s) + np.sum(P_c)) / (self.num_bs * self.p_max)
-        served_ue_fraction = float(np.mean(user_rates_mbps >= self.r_min))
+        # 2. R_communication
+        # pi_k = 1 if R_k(t) >= R_k^min
+        pi_k = (user_rates_mbps >= self.r_min).astype(np.float32)
+        r_comm = float(np.sum(pi_k) / self.num_ues)
 
-        # QoS is one-sided; sensing reliability has a signed margin around Pmin.
-        violation_qos = float(np.mean(np.maximum(
-            0.0, (self.r_min - user_rates_mbps) / self.r_min
-        )))
-        sensing_margin = p_suc / self.p_min_sensing - 1.0
-        violation_sensing = float(np.mean(np.maximum(0.0, -sensing_margin)))
-        # These uncertainty violations remain diagnostics, not extra penalties.
-        violation_pos = float(np.mean(np.maximum(
-            0.0, (u_pos - self.u_pos_max) / self.u_pos_max
-        )))
-        violation_vel = float(np.mean(np.maximum(
-            0.0, (u_vel - self.u_vel_max) / self.u_vel_max
-        )))
+        # 3. R_penalty
+        # pen_qos 
+        violation_rate = np.maximum(0.0, (self.r_min - user_rates_mbps) / self.r_min)
+        pen_qos = self.c1 * float(np.sum(violation_rate))
 
-        pen_qos = self.c1 * violation_qos
-        pen_sensing = self.c2 * violation_sensing
-        bonus_sensing = self.c2 * float(np.mean(np.maximum(0.0, sensing_margin)))
-        r_sensing_reliability = self.c2 * float(np.mean(sensing_margin))
+        # pen_sensing
+        violation_sensing = np.maximum(0.0, (self.p_min_sensing - p_suc) / self.p_min_sensing)
+        pen_sensing = self.c2 * float(np.sum(violation_sensing))
 
-        reward_aoi = self.alpha * self.beta * (1.0 - norm_aoi)
-        reward_tracking = self.alpha * (1.0 - self.beta) * (2.0 - norm_uncertainty)
-        reward_communication = (1.0 - self.alpha) * served_ue_fraction
-        r_obj = reward_aoi + reward_tracking + reward_communication
         r_penalty = pen_qos + pen_sensing
-        r_constraints = r_sensing_reliability - pen_qos
-        reward = float(r_obj + r_constraints)
+
+        # 4. Total reward
+        r_obj = self.alpha * r_sensing + (1.0 - self.alpha) * r_comm
+        reward = float(self.alpha * r_sensing + (1.0 - self.alpha) * r_comm - r_penalty)
 
         reward_info = {
             "reward": reward,
-            "r_obj": r_obj,
+            "r_sensing": r_sensing,
+            "r_comm": r_comm,
             "r_penalty": r_penalty,
-            "r_constraints": r_constraints,
             "pen_qos": pen_qos,
             "pen_sensing": pen_sensing,
-            "bonus_sensing": bonus_sensing,
-            "r_sensing_reliability": r_sensing_reliability,
-            "norm_aoi": norm_aoi,
-            "norm_uncertainty": norm_uncertainty,
+            "norm_aoi": float(1- term_aoi),
             "norm_power": norm_power,
-            "reward_aoi": reward_aoi,
-            "reward_tracking": reward_tracking,
-            "reward_communication": reward_communication,
-            "served_ue_fraction": served_ue_fraction,
-            "violation_qos": violation_qos,
-            "violation_sensing": violation_sensing,
-            "violation_pos": violation_pos,
-            "violation_vel": violation_vel,
+            "violation_qos": float(np.mean(violation_rate)),
+            "violation_sensing": float(np.mean(violation_sensing)),
         }
         return reward, r_obj, r_penalty, reward_info
 
     def step(self, actions_prb, actions_pwr):
-        """Advance a slot and update common and separate filters with paired data.
-
-        Argument:
-            (actions_prb) (array-like)[B, R]: PRB destination choices.
-            (actions_pwr) (array-like)[B, R]: Raw power allocation weights.
-        Return:
-            (transition) (tuple): Next local/global observations, scalar reward,
-                terminal/truncation flags and diagnostic metrics.
-        Note:
-            All filters predict once per slot. A separate filter only consumes
-            its own BS's already generated measurements. Logged tracking errors
-            use post-update estimates at the same slot as the ground truth.
+        """
+        Execute one environment transition step.
+        
+        Args:
+            actions_prb: PRB destination choices for each BS [B, R]
+            actions_pwr: Continuous power allocation weights for each BS [B, R]
+            
+        Returns:
+            next_local_obs (np.ndarray): Next local observations for all BSs [B, local_obs_dim]
+            next_global_state (np.ndarray): Next centralized state vector [global_state_dim]
+            reward (float): Step reward
+            terminated (bool): Episode termination flag (target tracking lost)
+            truncated (bool): Episode truncation flag (max steps reached)
+            info (dict): Diagnostic and logging metrics
         """
         self.current_step += 1
         
@@ -382,10 +358,9 @@ class MultiISACEnv:
         # 2. EKF predict (predict next target states for beamforming direction)
         for m in range(self.num_targets):
             self.ekf_common.predict(m)
-            for separate in self.ekf_separate:
-                separate.predict(m)
+            for b in range(self.num_bs):
+                self.ekf_separate[b].predict(m)
         self.pred_target_states = np.asarray(self.ekf_common.state_list, dtype=np.float32)
-        prediction_states = self.pred_target_states.copy()
         pred_target_pos = self.pred_target_states[:, :3]  # Predicted positions [M, 3]
         
         # 3. Channel simulation
@@ -447,7 +422,6 @@ class MultiISACEnv:
         # Collect measurements y_{b,m} = [r, theta, phi]^T and covariance matrices R_{b,m}
         # Only measure if the detection is successfull
         measurements_by_target = [[] for _ in range(self.num_targets)]
-        measurements_by_bs = [[[] for _ in range(self.num_targets)] for _ in range(self.num_bs)]
         for target in range(self.num_targets):
             for i in range(self.num_bs):
                 if self.detect_mask[i][target] == 1:
@@ -458,9 +432,6 @@ class MultiISACEnv:
                     measurements_by_target[target].append(
                         (self.bs_positions[i], measurement, covariance)
                     )
-                    measurements_by_bs[i][target].append(
-                        (self.bs_positions[i], measurement, covariance)
-                    )
         
         # 6. EKF state update & AoI update (both common and separate)
         for m in range(self.num_targets):
@@ -469,12 +440,16 @@ class MultiISACEnv:
                 self.aoi[m] = 0.0  # Reset AoI upon successful detection
             else:
                 self.aoi[m] += 1.0  # Increment AoI when target is missed
-            for b, separate in enumerate(self.ekf_separate):
-                if measurements_by_bs[b][m]:
-                    separate.update(m, measurements_by_bs[b][m])
 
-        # Posterior states are the current estimates used by the next decision.
-        self.pred_target_states = np.asarray(self.ekf_common.state_list, dtype=np.float32)
+            # Each-BS Local EKF: update ONLY with local measurements of BS b
+            for b in range(self.num_bs):
+                if self.detect_mask[b, m] == 1:
+                    meas_b = [
+                        (pos, meas, cov) for pos, meas, cov in measurements_by_target[m]
+                        if np.array_equal(pos, self.bs_positions[b])
+                    ]
+                    if meas_b:
+                        self.ekf_separate[b].update(m, meas_b)
                 
         # 7. Compute reward (Objective + Hinge loss penalties)
         u_pos, u_vel = self.ekf_common.get_uncer()
@@ -485,13 +460,16 @@ class MultiISACEnv:
             user_rates=user_rates,
             p_suc=self.prob_suc,
             u_pos=u_pos,
-            u_vel=u_vel
+            u_vel=u_vel,
+            X_c=X_c
         )          
 
-        separate_uncertainties = [f.get_uncer() for f in self.ekf_separate]
-        u_pos_sep = np.stack([values[0] for values in separate_uncertainties])
-        u_vel_sep = np.stack([values[1] for values in separate_uncertainties])
-        separate_states = np.asarray([f.state_list for f in self.ekf_separate])
+        sep_pos_list = [self.ekf_separate[b].get_uncer()[0] for b in range(self.num_bs)]
+        sep_vel_list = [self.ekf_separate[b].get_uncer()[1] for b in range(self.num_bs)]
+        u_pos_best_bs = float(np.mean(np.min(sep_pos_list, axis=0)))
+        u_vel_best_bs = float(np.mean(np.min(sep_vel_list, axis=0)))
+        u_pos_mean_bs = float(np.mean(np.mean(sep_pos_list, axis=0)))
+        u_vel_mean_bs = float(np.mean(np.mean(sep_vel_list, axis=0)))
         
         # 8. Check termination and truncation
         lost_target = bool(np.any(u_pos > self.u_pos_max) or np.any(u_vel > self.u_vel_max))
@@ -505,7 +483,7 @@ class MultiISACEnv:
         target_speeds = np.linalg.norm(target_vel, axis=1)
         pos_errors = np.linalg.norm(self.pred_target_states[:, :3] - target_pos, axis=1)
         vel_errors = np.linalg.norm(self.pred_target_states[:, 3:6] - target_vel, axis=1)
-        num_allocated_ues = float(np.sum(np.sum(X_c, axis=(0, 2)) > 0))
+        num_served_ues = float(np.sum(np.sum(X_c, axis=(0, 2)) > 0))
         num_qos_ues = float(np.sum(user_rates_mbps >= self.r_min))
 
         info = {
@@ -514,36 +492,21 @@ class MultiISACEnv:
             "target_speed_mean_mps": float(np.mean(target_speeds)),
             "pos_error_mean_m": float(np.mean(pos_errors)),
             "vel_error_mean_mps": float(np.mean(vel_errors)),
-            "pos_prediction_error_mean_m": float(np.mean(np.linalg.norm(prediction_states[:, :3] - target_pos, axis=1))),
-            "vel_prediction_error_mean_mps": float(np.mean(np.linalg.norm(prediction_states[:, 3:] - target_vel, axis=1))),
-            "pos_error_separate_mean_m": float(np.mean(np.linalg.norm(separate_states[:, :, :3] - target_pos[None], axis=2))),
-            "vel_error_separate_mean_mps": float(np.mean(np.linalg.norm(separate_states[:, :, 3:] - target_vel[None], axis=2))),
-            "num_allocated_ues": num_allocated_ues,
-            "num_served_ues": num_qos_ues,
+            "num_served_ues": num_served_ues,
             "num_qos_ues": num_qos_ues,
             "aoi_mean": float(np.mean(self.aoi)),
             "u_pos_mean": float(np.mean(u_pos)),
             "u_vel_mean": float(np.mean(u_vel)),
-            "u_pos_separate_mean": float(np.mean(u_pos_sep)),
-            "u_vel_separate_mean": float(np.mean(u_vel_sep)),
             "comm_rate_mean_mbps": float(np.mean(user_rates_mbps)),
             "qos_satisfaction_rate": float(np.mean(user_rates_mbps >= self.r_min)),
             "sensing_success_prob_mean": float(np.mean(self.prob_suc)),
-            "sensing_success_prob_min": float(np.min(self.prob_suc)),
-            "sensing_threshold_satisfaction": float(np.mean(self.prob_suc >= self.p_min_sensing)),
-            "comm_rate_min_mbps": float(np.min(user_rates_mbps)),
-            "sensing_detection_rate": float(np.mean(np.any(self.detect_mask, axis=0))),
-            "sensing_prb_fraction": float(np.sum(X_s) / (self.num_bs * self.n_prb)),
-            "comm_prb_fraction": float(np.sum(X_c) / (self.num_bs * self.n_prb)),
-            "sensing_power_mean_w": float(np.sum(P_s) / self.num_bs),
-            "comm_power_mean_w": float(np.sum(P_c) / self.num_bs),
             "lost_target": lost_target,
+            "u_pos_best_local_bs": u_pos_best_bs,
+            "u_vel_best_local_bs": u_vel_best_bs,
+            "u_pos_mean_local_bs": u_pos_mean_bs,
+            "u_vel_mean_local_bs": u_vel_mean_bs,
         }
-        for b in range(self.num_bs):
-            info[f"u_pos_separate_bs_{b}_mean"] = float(np.mean(u_pos_sep[b]))
-            info[f"u_vel_separate_bs_{b}_mean"] = float(np.mean(u_vel_sep[b]))
         info.update(reward_info)
-        info.update(self.channel.last_sensing_diagnostics)
         return next_local_obs, next_global_state, reward, terminated, truncated, info
 
     def _get_local_observations(self):

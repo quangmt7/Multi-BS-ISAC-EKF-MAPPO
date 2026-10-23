@@ -1,5 +1,6 @@
 import numpy as np
 from comUtils.common import wrap_angle
+import math
 
 class EKF:
     """
@@ -243,18 +244,21 @@ class EKF:
         return self.u_pos, self.u_vel
 
     def cal_rmse(self, true_pos):
-        """Return root mean squared Euclidean position error across targets.
-
-        Argument:
-            (true_pos) (array-like)[num_target, 3]: Truth at the estimate's slot.
-        Return:
-            (rmse) (float): sqrt(mean_target(sum_xyz(error**2))) in meters.
         """
-        truth = np.asarray(true_pos, dtype=float)
-        estimates = np.asarray(self.state_list, dtype=float)
-        if truth.shape != (self.num_target, 3) or estimates.shape != (self.num_target, self.state_dim):
-            raise ValueError('RMSE requires one initialized 3D position per target')
-        return float(np.sqrt(np.mean(np.sum((estimates[:, :3] - truth)**2, axis=-1))))
+        Calculate the RMSE of each state's position
+        Parameter
+            true_pos : (float)[num_target, 3] a targets' true position
+        Return
+            rmse : RMSE of all targets
+        """
+        rmse = 0
+        for i in range(len(self.num_target)):
+            rmse_tar = 0
+            for k in range(len(self.state_list[i])):
+                rmse_tar += (self.state_list[i][k] - true_pos[i][k])
+            rmse+=rmse_tar
+        rmse = math.sqrt(rmse / self.num_target)
+        return rmse
             
 
 

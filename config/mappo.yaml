@@ -22,7 +22,6 @@ mappo_parameters:
   action_space:
     power_action_type: "continuous"    # Công suất liên tục (Squashed Gaussian / Beta distribution)
     power_min_watt: 0.0                # Công suất phát tối thiểu trên mỗi PRB (W)
-    power_budget_control: true          # Thêm hành động chọn tổng công suất BS, sau đó chia cho PRB
 
   # ----------------------------------------------------------------------------
   # 3. Kiến trúc mạng nơ-ron (Actor & Critic Networks)
@@ -34,9 +33,6 @@ mappo_parameters:
       use_layer_norm: true             # Chuẩn hóa Layer Normalization
       orthogonal_init: true            # Khởi tạo trọng số trực giao (Orthogonal Initialization)
       gain: 0.01                       # Hệ số gain lớp output của Actor
-      initial_sensing_fraction: 0.65    # Xác suất ban đầu cho cả nhóm target; vẫn được học tiếp
-      initial_idle_fraction: 0.02       # Xác suất idle ban đầu; phần còn lại dành cho nhóm UE
-      initial_power_fraction: 0.75      # Tâm sigmoid ban đầu của tổng công suất/Pmax
 
     critic:
 
@@ -48,35 +44,43 @@ mappo_parameters:
 
   # ----------------------------------------------------------------------------
   # 4. Trọng số hàm mục tiêu tối ưu (Objective Weights)
-  #   S = beta*(1-A_bar/A_max) + (1-beta)*(2-U_pos/U_pos_max-U_vel/U_vel_max)
-  #   C = mean_k 1[R_k >= R_min]; R_obj = alpha*S + (1-alpha)*C.
-  #   Chỉ nhân alpha và (1-alpha) một lần. Không có phạt công suất trong reward.
+  #   R_obj = - alpha * (A_bar / A_max) - beta * (U_pos / U_pos_max + U_vel / U_vel_max) - gamma * (P_used / P_max)
+  #   với alpha, beta, gamma >= 0 và alpha + beta + gamma = 1.0 
   # ----------------------------------------------------------------------------
   reward_weights:
-    sensing_priority_alpha: 0.6        # Theo trao đổi 22/10: phần sensing 0.6, phần UE 1-alpha = 0.4
-    aoi_mix_beta: 0.5                  # Beta trong sensing; hệ số AoI/pos/vel mỗi phần là 0.3
+    alpha_aoi: 0.4                     # alpha = 0.4: Trọng số của Age of Information (AoI)
+    beta_uncertainty: 0.4              # beta = 0.4: Trọng số của độ bất định ước lượng EKF (pos + vel)
+    gamma_power: 0.2                   # gamma = 0.2: Trọng số của công suất phát tiêu thụ
+    # Tổng: 0.4 + 0.4 + 0.2 = 1.0
 
   # ----------------------------------------------------------------------------
   # 5. Các giá trị chuẩn hóa (Normalization Constants)
-  # Tham chiếu chuẩn hóa; giá trị vượt ngưỡng có thể lớn hơn 1 trong reward
+  # Đảm bảo từng thành phần trong hàm mục tiêu và State nằm trong khoảng [0, 1]
   # ----------------------------------------------------------------------------
   normalization:
     a_max: 20.0                        # A_max: Ngưỡng chuẩn hóa cực đại AoI (khe thời gian)
     u_pos_max: 100.0                   # Đồng bộ ngưỡng bất định vị trí trong ekf.yaml
     u_vel_max: 100.0                   # Đồng bộ ngưỡng bất định vận tốc trong ekf.yaml
-    p_max_watt: 3.162                    # P_max: Công suất chuẩn hóa = 3.162 W
+    p_max_watt: 3.162                    # P_max: Công suất chuẩn hóa = 2.0 W
 
 
   # ----------------------------------------------------------------------------
-  # 6. Ràng buộc theo trao đổi ngày 21/10/2026:
-  #   R_qos  = -c1 * mean_k max(0, 1 - R_k/R_min): chỉ phạt thiếu QoS.
-  #   R_sens =  c2 * mean_m (P_suc/P_min - 1): vừa thưởng, vừa phạt.
-  #   Reward = R_obj + R_qos + R_sens. Dùng trung bình như reward.pdf của Thuận.
-  #   Uncertainty đã có margin có dấu trong S, không phạt hinge thêm lần nữa.
+  # 6. Phạt vi phạm ràng buộc sau khi chuẩn hóa theo từng UE/target:
+  #   v1 = mean_k max(0, 1 - R_k / R_min)
+  #   v2 = mean_m max(0, 1 - P_suc / P_min)
+  #   v3 = mean_m max(0, U_pos / U_pos_max - 1)
+  #   v4 = mean_m max(0, U_vel / U_vel_max - 1)
+  #   Reward = R_obj - sum_i c_i * v_i; vượt QoS không được thưởng thêm.
   # ----------------------------------------------------------------------------
   penalties:
     c1_rate_qos: 0.2                   # c1 = 0.2: Phạt khi tốc độ UE không đạt: R_k < R_k^min
-    c2_sensing_reliability: 1.0        # Hệ số của margin sensing có dấu quanh P_min
+    c2_sensing_reliability: 0.2        # c2 = 0.2: Phạt khi xác suất sensing không đạt: P_m^suc < P_m^min
+    c3_pos_uncertainty: 0.1            # c3 = 0.1: Phạt khi bất định vị trí EKF vượt ngưỡng: U_pos > U_pos_max
+    c4_vel_uncertainty: 0.1            # c4 = 0.1: Phạt khi bất định vận tốc EKF vượt ngưỡng: U_vel > U_vel_max
+    penalty_rate_qos: 0.2              # Alias tương thích ngược
+    penalty_sensing_reliability: 0.2   # Alias tương thích ngược
+    penalty_uncertainty: 0.2           # Alias tương thích ngược
+    penalty_power_budget: 0.5          # Phạt khi tổng công suất BS vượt P_b^max (ràng buộc vật lý)
 
   # ----------------------------------------------------------------------------
   # 7. Ràng buộc chỉ tiêu QoS (QoS Thresholds)

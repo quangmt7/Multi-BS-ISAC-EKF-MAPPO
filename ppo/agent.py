@@ -65,10 +65,7 @@ class MAPPOAgent:
         
         # actor, critic network and optimizers
         network_config = mappo_config["network"]
-        self.actornetwork = Actor(
-            local_obs_dim, self.n_prb, self.num_targets, self.num_ues, network_config["actor"],
-            power_budget_control=mappo_config["action_space"].get("power_budget_control", False),
-        ).to(self.device)
+        self.actornetwork = Actor(local_obs_dim, self.n_prb, self.num_targets, self.num_ues, network_config["actor"]).to(self.device)
         self.criticnetwork= Critic(global_state_dim, network_config["critic"]).to(self.device)
         self.actor_optimizer= torch.optim.Adam(self.actornetwork.parameters(), lr= ppo_config.get("lr_actor"))
         self.critic_optimizer= torch.optim.Adam(self.criticnetwork.parameters(), lr= ppo_config.get("lr_critic"))
@@ -84,8 +81,7 @@ class MAPPOAgent:
 
         Return:
             act_prb (np.ndarray)[B, n_prb]: Discrete PRB selection decisions for B BSs (dtype int64).
-            act_pwr (np.ndarray)[B, R or R+1]: Relative PRB powers in [0, 1];
-                with budget control, the last action is the BS power fraction.
+            act_pwr (np.ndarray)[B, n_prb]: Continuous normalized power allocations for B BSs in [0, 1] (dtype float32).
             logp (np.ndarray)[B]: Action log-probabilities for each BS.
             val (float): Scalar state-value V(S) predicted by the Centralized Critic.
 

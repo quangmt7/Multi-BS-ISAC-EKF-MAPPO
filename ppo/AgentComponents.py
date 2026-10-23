@@ -11,7 +11,7 @@ class Actor(nn.Module):
     Note:
         Operates under decentralized execution: each BS executes the policy using only its local observation.
     """
-    def __init__(self, local_obs_dim, n_prb, num_targets, num_ues, net_conf, power_budget_control=False):
+    def __init__(self, local_obs_dim, n_prb, num_targets, num_ues, net_conf):
         """
         Initialize the Actor network modules and policy heads.
 
@@ -21,19 +21,13 @@ class Actor(nn.Module):
             num_targets (int): Number of mobile sensing targets.
             num_ues (int): Number of communication users (UEs).
             net_conf (dict): Network configuration
-            power_budget_control (bool): Append one total-power fraction per BS.
 
         Return:
             None.
-        Note:
-            Optional group probabilities only initialize trainable PRB biases;
-            they do not reserve PRBs or prevent later changes in allocation.
-            The optional final power action controls the BS total budget.
         """
         super().__init__()
         self.n_prb = n_prb
         self.num_choices = 1 + num_targets + num_ues #number of choice for each prb
-        self.power_action_dim = self.n_prb + int(power_budget_control)
         self.hiddens_dim = net_conf["hidden_dims"]
         # Use a common function to build the backbone
         self.backbone, self.out_gain = build_mlp(input_dim=local_obs_dim,
@@ -45,29 +39,13 @@ class Actor(nn.Module):
                                                 isActor=True)
         
         self.prb_head = nn.Linear(net_conf["hidden_dims"][1], self.n_prb * self.num_choices) # sum of prb choice
-        self.power_mean = nn.Linear(net_conf["hidden_dims"][1], self.power_action_dim)
+        self.power_mean = nn.Linear(net_conf["hidden_dims"][1], self.n_prb) # n numbers of power allocation for n prb
         if net_conf["orthogonal_init"]:
             for head in (self.prb_head, self.power_mean):
                 nn.init.orthogonal_(head.weight, gain=self.out_gain)
                 nn.init.zeros_(head.bias)
         # Khởi tạo logstd = -1.0 (std = exp(-1.0) ≈ 0.36) giúp độ tản ban đầu vừa vặn với miền [0, 1]
-        self.power_logstd = nn.Parameter(torch.full((1, self.power_action_dim), -1.0))
-        if "initial_sensing_fraction" in net_conf:
-            sensing = float(net_conf["initial_sensing_fraction"])
-            idle = float(net_conf.get("initial_idle_fraction", 0.02))
-            if not (0 < sensing < 1 and 0 < idle < 1 and sensing + idle < 1):
-                raise ValueError("Initial sensing/idle probabilities must be positive and sum to less than one")
-            probabilities = [idle] + [sensing / num_targets] * num_targets
-            probabilities += [(1 - sensing - idle) / num_ues] * num_ues
-            with torch.no_grad():
-                self.prb_head.bias.copy_(torch.tensor(
-                    np.tile(np.log(probabilities), self.n_prb), dtype=self.prb_head.bias.dtype))
-        if power_budget_control:
-            fraction = float(net_conf.get("initial_power_fraction", 0.5))
-            if not 0 < fraction < 1:
-                raise ValueError("Initial power fraction must be strictly between zero and one")
-            with torch.no_grad():
-                self.power_mean.bias[-1] = np.log(fraction / (1 - fraction))
+        self.power_logstd = nn.Parameter(torch.full((1, self.n_prb), -1.0))
          
     def forward(self, obs, action_prb=None, action_power=None):
         """
@@ -76,13 +54,11 @@ class Actor(nn.Module):
         Argument:
             obs (torch.Tensor)[batch, local_obs_dim]: Local observation features of the base stations.
             action_prb (torch.Tensor or None)[batch, n_prb]: Optional discrete PRB actions for evaluation.
-            action_power (torch.Tensor or None)[batch, power_action_dim]: PRB
-                weights and, when enabled, one final BS power fraction.
+            action_power (torch.Tensor or None)[batch, n_prb]: Optional continuous power actions for evaluation.
 
         Return:
             action_prb (torch.Tensor)[batch, n_prb]: Sampled or evaluated discrete PRB selection indices.
-            action_power (torch.Tensor)[batch, power_action_dim]: Normalized
-                PRB weights and optional BS power fraction in [0, 1].
+            action_power (torch.Tensor)[batch, n_prb]: Sampled or evaluated continuous normalized power values in [0, 1].
             total_log_prob (torch.Tensor)[batch]: Sum of log-probabilities for discrete and continuous action heads.
             total_entropy (torch.Tensor)[batch]: Total policy entropy of discrete and continuous distributions.
 
@@ -211,7 +187,7 @@ class MultiAgentRolloutBuffer:
             local_obs (np.ndarray)[B, local_obs_dim]: Local observations for all B base stations.
             global_state (np.ndarray)[global_state_dim]: Global network state for Centralized Critic.
             act_prb (np.ndarray)[B, n_prb]: Discrete PRB selection decisions for all BSs.
-            act_pwr (np.ndarray)[B, R or R+1]: PRB weights and optional BS budget.
+            act_pwr (np.ndarray)[B, n_prb]: Continuous power allocation decisions for all BSs.
             logp (np.ndarray)[B]: Joint log-probabilities of actions for each BS.
             reward (float): Shared team reward scalar received from the environment.
             terminated (bool or float): Terminal failure flag (e.g. lost target).
@@ -265,7 +241,7 @@ class MultiAgentRolloutBuffer:
             b_obs (torch.Tensor)[T, B, local_obs_dim]: Batched local observations.
             b_states (torch.Tensor)[T, global_state_dim]: Batched global state vectors.
             b_act_prb (torch.Tensor)[T, B, n_prb]: Batched discrete PRB decisions (dtype int64).
-            b_act_pwr (torch.Tensor)[T, B, R or R+1]: Batched power actions.
+            b_act_pwr (torch.Tensor)[T, B, n_prb]: Batched continuous power allocations (dtype float32).
             b_logprobs (torch.Tensor)[T, B]: Batched action log-probabilities.
             b_rewards (torch.Tensor)[T]: Batched team rewards.
             b_terminateds (torch.Tensor)[T]: Batched terminal state flags.
