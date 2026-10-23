@@ -53,12 +53,9 @@ class MultiISACEnv:
         norm_cfg = mappo_cfg["normalization"]
         penalty_cfg = mappo_cfg["penalties"]
         
-        # Trọng số mục tiêu theo đề xuất mới (21/10/2026):
-        # alpha: Trọng số giữa Sensing (alpha) và Communication (1 - alpha)
-        # beta: Trọng số giữa AoI (beta) và Bất định EKF (1 - beta)
-        self.alpha = float(reward_cfg.get("alpha", reward_cfg.get("alpha_aoi", 0.5)))                   
-        self.beta = float(reward_cfg.get("beta", reward_cfg.get("beta_uncertainty", 0.5)))              
-        self.gamma = float(reward_cfg.get("gamma_power", 0.0))                 
+        self.alpha = float(reward_cfg["alpha_aoi"])                   
+        self.beta = float(reward_cfg["beta_uncertainty"])              
+        self.gamma = float(reward_cfg["gamma_power"])                     
       
         self.a_max = float(norm_cfg["a_max"])                         
         self.u_pos_max = float(ekf_config["uncertainty_limits"]["u_pos_max"])
