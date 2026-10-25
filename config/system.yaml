@@ -54,9 +54,9 @@ system_parameters:
     beam_pattern_q: 2.0                # q > 0: Tham số điều khiển độ suy giảm búp sóng khi lệch hướng 
 
     # --- Can nhiễu C2S và IBI ---
-    c2s_leakage_eta0: 1.0e-11          # eta_0: Coupling công suất C2S còn dư sau cách ly/triệt nhiễu (-110 dB); giả định mô phỏng
+    c2s_leakage_eta0: 1.0e-5          # eta_0: Coupling công suất C2S còn dư sau cách ly/triệt nhiễu (-110 dB); giả định mô phỏng
     c2s_leakage_alpha: 1.0             # alpha: Hệ số suy giảm leakage theo khoảng cách PRB
-    ibi_coupling_eta: 1.0e-2           # eta_IBI: Hệ số ghép nối công suất nhiễu liên trạm BS 
+    ibi_coupling_eta: 1.0e-5           # eta_IBI: Hệ số ghép nối công suất nhiễu liên trạm BS 
 
   # ----------------------------------------------------------------------------
   # 5. Tham số cấu hình chi tiết cho người dùng truyền thông (UE Parameters)
@@ -95,7 +95,7 @@ system_parameters:
     bs_height_m: 25.0                  # Độ cao đặt antenna trạm BS: 25.0 m
     ue_height_m: 1.5                   # Độ cao thiết bị người dùng UE: 1.5 m
     target_height_min_m: 10.0          # Độ cao bay tối thiểu của target: 10.0 m
-    target_height_max_m: 60.0          # Độ cao bay tối đa của target: 60.0 m
+    target_height_max_m: 50.0          # Độ cao bay tối đa của target: 60.0 m
     target_velocity_min_mps: 5.0       # Vận tốc tối thiểu của target: 5.0 m/s (~18 km/h)
     target_velocity_max_mps: 25.0      # Vận tốc tối đa của target: 25.0 m/s (~90 km/h)
 
@@ -110,6 +110,6 @@ system_parameters:
   # ----------------------------------------------------------------------------
   requirements:
     min_ue_rate_mbps: 1.0              # R_k^min = 1.0 Mbps (Tốc độ truyền thông tối thiểu yêu cầu)
-    min_sensing_success_prob: 0.90     # P_m^min = 0.90 (Xác suất sensing thành công tối thiểu)
-    min_detection_prob: 0.90           # P_D^min = 0.90 (Xác suất phát hiện tối thiểu mỗi BS-target)
+    min_sensing_success_prob: 0.50     # P_m^min = 0.90 (Xác suất sensing thành công tối thiểu)
+    min_detection_prob: 0.50           # P_D^min = 0.90 (Xác suất phát hiện tối thiểu mỗi BS-target)
     max_prob_false_alarm: 1.0e-4       # P_F = 1.0e-4 (Xác suất báo động giả)

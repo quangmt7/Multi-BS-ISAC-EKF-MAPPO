@@ -92,7 +92,7 @@ class ResultArtifacts:
         fig, ax = plt.subplots(figsize=(10, 5))
         ax.plot(*curve, color="#94a3b8", linewidth=0.8, label="Episode return")
         if len(curve[1]) >= 2:
-            window = min(20, len(curve[1]))
+            window = min(10, len(curve[1]))
             smoothed = np.convolve(curve[1], np.ones(window) / window, mode="valid")
             ax.plot(curve[0][window - 1 :], smoothed, color="#2563eb",
                     linewidth=2, label=f"Moving mean ({window} episodes)")

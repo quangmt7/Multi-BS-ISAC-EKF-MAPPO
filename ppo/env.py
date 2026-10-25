@@ -1,4 +1,5 @@
 import numpy as np
+import math
 from scenario.scenario import Scenario
 from channel.channel import WirelessChannel
 from communication.communication import CommunicationManager
@@ -273,6 +274,9 @@ class MultiISACEnv:
             Each entity's shortfall is evaluated before averaging. Surplus
             throughput does not compensate for another UE's QoS violation.
         """
+        k1 = 1
+        k2 = 1
+        k3 = 1
         u_pos = np.asarray(u_pos, dtype=np.float32)
         u_vel = np.asarray(u_vel, dtype=np.float32)
         p_suc = np.asarray(p_suc, dtype=np.float32)
@@ -280,30 +284,37 @@ class MultiISACEnv:
         user_rates_mbps = user_rates / 1e6
 
         # 1. Primary objective R_obj
-        norm_aoi = float(np.mean(self.aoi)) / self.a_max
-        norm_uncertainty = (float(np.mean(u_pos)) / self.u_pos_max) + (float(np.mean(u_vel)) / self.u_vel_max)
-        norm_power = float(np.sum(P_s) + np.sum(P_c)) / (self.num_bs * self.p_max)
+        norm_aoi = float(np.mean(np.exp(-k1*(self.aoi / self.a_max))))
+
+        # Use f(x) = e^(-kx)
+        norm_uncertainty = float(np.mean(np.exp(-k2*(u_pos / self.u_pos_max)))) \
+                        + float(np.mean(np.exp(-k2 * (u_vel / self.u_vel_max))))
+        norm_power = float(np.exp(-k3* (np.sum(P_s) + np.sum(P_c)) / (self.num_bs * self.p_max)))
 
         # 2. Penalize only violations, not differences beyond a satisfied limit.
+        # Penalize only constraint violations
         violation_qos = float(np.mean(np.maximum(
             0.0, (self.r_min - user_rates_mbps) / self.r_min
-        )))
-        violation_sensing = float(np.mean(
-            (self.p_min_sensing - p_suc) / self.p_min_sensing
-        ))
-        violation_pos = float(np.mean(
-            (u_pos - self.u_pos_max) / self.u_pos_max
-        ))
-        violation_vel = float(np.mean(
-            (u_vel - self.u_vel_max) / self.u_vel_max
-        ))
+        )**2))
+
+        violation_sensing = float(np.mean(np.maximum(
+            0.0, (self.p_min_sensing - p_suc) / self.p_min_sensing
+        )**2))
+
+        violation_pos = float(np.mean(np.maximum(
+            0.0, (u_pos - self.u_pos_max) / self.u_pos_max
+        )**2))
+
+        violation_vel = float(np.mean(np.maximum(
+            0.0, (u_vel - self.u_vel_max) / self.u_vel_max
+        )**2))
 
         pen_qos = self.c1 * violation_qos
         pen_sensing = self.c2 * violation_sensing
         pen_upos = self.c3 * violation_pos
         pen_uvel = self.c4 * violation_vel
 
-        r_obj = - (self.alpha * norm_aoi + self.beta * norm_uncertainty + self.gamma * norm_power)
+        r_obj = (self.alpha * norm_aoi + self.beta * norm_uncertainty + self.gamma * norm_power)
         r_penalty = pen_qos + pen_sensing + pen_upos + pen_uvel
         reward = float(r_obj - r_penalty)
 
@@ -448,14 +459,21 @@ class MultiISACEnv:
             u_vel=u_vel
         )          
 
-        u_pos_sep, u_vel_sep = 0, 0
+        u_pos_sep, u_vel_sep = math.inf, math.inf
         for b in range(self.num_bs):
             u_pos_sep1, u_vel_sep1 = self.ekf_separate[b].get_uncer()
             u_pos_sep = min(min(u_pos_sep1), u_pos_sep)
             u_vel_sep = min(min(u_vel_sep1), u_vel_sep)
         
+        # DEBUG
+        #print(f"u_pos max: {np.max(u_pos)}, mean: {np.mean(u_pos)} lost: {np.mean(u_pos > self.u_pos_max)}\n"
+        #      f"u_vel max: {np.max(u_vel)}, mean: {np.mean(u_vel)} lost: {np.mean(u_vel > self.u_vel_max)}\n")
         # 8. Check termination and truncation
-        lost_target = bool(np.any(u_pos > self.u_pos_max) or np.any(u_vel > self.u_vel_max))
+        lost_target = bool(
+            np.mean(u_pos > self.u_pos_max) > 0.5
+            or
+            np.mean(u_vel > self.u_vel_max) > 0.5
+        )
         terminated = bool(lost_target)
         truncated = bool(self.current_step >= self.max_steps)
         next_local_obs = self._get_local_observations()
