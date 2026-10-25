@@ -309,11 +309,11 @@ class MultiISACEnv:
         # 3. R_penalty
         # pen_qos 
         violation_rate = np.maximum(0.0, (self.r_min - user_rates_mbps) / self.r_min)
-        pen_qos = self.c1 * float(np.mean(violation_rate)**2)
+        pen_qos = self.c1 * float(np.mean(violation_rate**2))
 
         # pen_sensing
         violation_sensing = np.maximum(0.0, (self.p_min_sensing - p_suc) / self.p_min_sensing)
-        pen_sensing = self.c2 * float(np.mean(violation_sensing)**2)
+        pen_sensing = self.c2 * float(np.mean(violation_sensing**2))
 
         violation_pos = self.c3 * float(np.mean(np.maximum(
             0.0, (u_pos - self.u_pos_max) / self.u_pos_max

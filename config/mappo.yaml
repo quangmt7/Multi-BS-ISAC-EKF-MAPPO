@@ -98,7 +98,7 @@ mappo_parameters:
   # 9. Quản lý quá trình huấn luyện (Training & Rollout Management)
   # ----------------------------------------------------------------------------
   training:
-    total_episodes: 2700             # Tổng số episode huấn luyện
+    total_episodes: 5000             # Tổng số episode huấn luyện
     episode_length: 100              # T = 100 khe thời gian liên tiếp mỗi episode
     rollout_threads: 1                 # Số môi trường song song (nếu dùng vector env)
     save_interval: 50                  # Lưu checkpoint sau mỗi 50 episode
