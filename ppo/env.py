@@ -1,4 +1,5 @@
 import numpy as np
+import math
 from scenario.scenario import Scenario
 from channel.channel import WirelessChannel
 from communication.communication import CommunicationManager
@@ -281,6 +282,11 @@ class MultiISACEnv:
                 - 'violation_qos': Average normalized QoS violation across UEs.
                 - 'violation_sensing': Average normalized sensing violation across targets.
         """
+        # This is for temporary function to transform rate -> output used in reward
+        k1 = 1
+        k2 = 1
+        k3 = 1
+        k4 = 1
         u_pos = np.asarray(u_pos, dtype=np.float32)
         u_vel = np.asarray(u_vel, dtype=np.float32)
         p_suc = np.asarray(p_suc, dtype=np.float32)
@@ -288,33 +294,40 @@ class MultiISACEnv:
         user_rates_mbps = user_rates / 1e6
         
         # 1. R_sensing 
-        a_bar = float(np.mean(self.aoi))
-        u_pos_bar = float(np.mean(u_pos))
-        u_vel_bar = float(np.mean(u_vel))
+        norm_aoi = np.mean(self.aoi) / self.a_max
+        a_bar = float(np.mean(np.exp(-k1*(self.aoi / self.a_max))))
+        u_pos_bar = float(np.mean(np.exp(-k2*(u_pos / self.u_pos_max))))
+        u_vel_bar = float(np.mean(np.exp(-k2 * (u_vel / self.u_vel_max))))
 
-        term_aoi = 1.0 - (a_bar / self.a_max)
-        term_uncertainty = (1.0 - (u_pos_bar / self.u_pos_max)) + (1.0 - (u_vel_bar / self.u_vel_max))
-        r_sensing = self.beta * term_aoi + (1.0 - self.beta) * term_uncertainty
-        norm_power = float(np.sum(P_s) + np.sum(P_c)) / (self.num_bs * self.p_max)
+        r_sensing = self.beta * a_bar + (1.0 - self.beta) * (u_pos_bar+u_vel_bar)
+        norm_power =  float(np.exp(-k3* (np.sum(P_s) + np.sum(P_c)) / (self.num_bs * self.p_max)))
         # 2. R_communication
         # pi_k = 1 if R_k(t) >= R_k^min
         pi_k = (user_rates_mbps >= self.r_min).astype(np.float32)
-        r_comm = float(np.sum(pi_k) / self.num_ues)
+        r_comm = float(np.exp(-k4*(np.sum(pi_k) / self.num_ues)))
 
         # 3. R_penalty
         # pen_qos 
         violation_rate = np.maximum(0.0, (self.r_min - user_rates_mbps) / self.r_min)
-        pen_qos = self.c1 * float(np.sum(violation_rate))
+        pen_qos = self.c1 * float(np.mean(violation_rate**2))
 
         # pen_sensing
         violation_sensing = np.maximum(0.0, (self.p_min_sensing - p_suc) / self.p_min_sensing)
-        pen_sensing = self.c2 * float(np.sum(violation_sensing))
+        pen_sensing = self.c2 * float(np.mean(violation_sensing**2))
 
-        r_penalty = pen_qos + pen_sensing
+        violation_pos = self.c3 * float(np.mean(np.maximum(
+            0.0, (u_pos - self.u_pos_max) / self.u_pos_max
+        )**2))
+
+        violation_vel = self.c4 * float(np.mean(np.maximum(
+            0.0, (u_vel - self.u_vel_max) / self.u_vel_max
+        )**2))
+
+        r_penalty = pen_qos + pen_sensing + violation_pos + violation_vel
 
         # 4. Total reward
         r_obj = self.alpha * r_sensing + (1.0 - self.alpha) * r_comm
-        reward = float(self.alpha * r_sensing + (1.0 - self.alpha) * r_comm - r_penalty)
+        reward = float(r_obj - r_penalty)
 
         reward_info = {
             "reward": reward,
@@ -323,7 +336,7 @@ class MultiISACEnv:
             "r_penalty": r_penalty,
             "pen_qos": pen_qos,
             "pen_sensing": pen_sensing,
-            "norm_aoi": float(1- term_aoi),
+            "norm_aoi": norm_aoi,
             "norm_power": norm_power,
             "violation_qos": float(np.mean(violation_rate)),
             "violation_sensing": float(np.mean(violation_sensing)),
@@ -471,8 +484,15 @@ class MultiISACEnv:
         u_pos_mean_bs = float(np.mean(np.mean(sep_pos_list, axis=0)))
         u_vel_mean_bs = float(np.mean(np.mean(sep_vel_list, axis=0)))
         
+        # DEBUG
+        #print(f"u_pos max: {np.max(u_pos)}, mean: {np.mean(u_pos)} lost: {np.mean(u_pos > self.u_pos_max)}\n"
+        #      f"u_vel max: {np.max(u_vel)}, mean: {np.mean(u_vel)} lost: {np.mean(u_vel > self.u_vel_max)}\n")
         # 8. Check termination and truncation
-        lost_target = bool(np.any(u_pos > self.u_pos_max) or np.any(u_vel > self.u_vel_max))
+        lost_target = bool(
+            np.mean(u_pos > self.u_pos_max) > 0.5
+            or
+            np.mean(u_vel > self.u_vel_max) > 0.5
+        )
         terminated = bool(lost_target)
         truncated = bool(self.current_step >= self.max_steps)
         next_local_obs = self._get_local_observations()

@@ -60,8 +60,8 @@ ekf_parameters:
   # 6. Ngưỡng bất định ước lượng trạng thái (Uncertainty Limits)
 
   uncertainty_limits:
-    u_pos_max: 100.0                    # U_m^{pos,max} = 20.0 m^2 (Ngưỡng bất định vị trí tối đa)
-    u_vel_max: 100.0                    # U_m^{vel,max} = 10.0 m^2/s^2 (Ngưỡng bất định vận tốc tối đa)
+    u_pos_max: 50.0                    # U_m^{pos,max} = 10.0 m^2 (Ngưỡng bất định vị trí tối đa)
+    u_vel_max: 50.0                    # U_m^{vel,max} = 10.0 m^2/s^2 (Ngưỡng bất định vận tốc tối đa)
 
   # ----------------------------------------------------------------------------
   # 7. Hợp nhất đo đạc Multi-BS EKF (Batch Matrix Measurement Fusion)

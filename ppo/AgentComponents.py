@@ -46,6 +46,8 @@ class Actor(nn.Module):
                 nn.init.zeros_(head.bias)
         # Khởi tạo logstd = -1.0 (std = exp(-1.0) ≈ 0.36) giúp độ tản ban đầu vừa vặn với miền [0, 1]
         self.power_logstd = nn.Parameter(torch.full((1, self.n_prb), -1.0))
+        #print("n_prb:", self.n_prb)
+        #print("num_choices:", self.num_choices)
          
     def forward(self, obs, action_prb=None, action_power=None):
         """
@@ -71,12 +73,25 @@ class Actor(nn.Module):
         # First branch: PRB (discrete)
         prb_logits = self.prb_head(feat).reshape(-1, self.n_prb, self.num_choices) 
         prb_dist = Categorical(logits=prb_logits)
+
+        probs = prb_dist.probs
+
+        #print("Mean max probability:", probs.max(dim=-1).values.mean().item())
+        #print("Mean probability:", probs.mean().item())
+        #print("Mean PRB entropy:", prb_dist.entropy().mean().item())
         
         if action_prb is None:
             action_prb = prb_dist.sample() 
+
+        #print("action_prb shape:", action_prb.shape)
+        #print("action_prb min/max:",
+        #    action_prb.min().item(), action_prb.max().item())
+        
         
         # Calculate log_prob of PRB branch 
         logp_prb = prb_dist.log_prob(action_prb).sum(dim=-1)
+        #print("logp_prb mean:", logp_prb.mean().item())
+        #print("logp_prb std:", logp_prb.std().item())
         entropy_prb = prb_dist.entropy().sum(dim=-1)
     
         # Second branch: Power (continuous)
@@ -101,8 +116,14 @@ class Actor(nn.Module):
         # result
         total_log_prob = logp_prb + logp_power
         total_entropy = entropy_prb + entropy_power
+
+        #print("prb_logits shape:", prb_logits.shape)
+        #print("entropy per PRB shape:", prb_dist.entropy().shape)
+        #print("entropy_prb:", entropy_prb)
+        #print("entropy_power:", entropy_power)
         
         return action_prb, action_power, total_log_prob, total_entropy
+        #logp_prb, logp_power
 
 
 class Critic(nn.Module):
