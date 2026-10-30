@@ -179,6 +179,7 @@ class MAPPOTrainer:
                         steps_taken += 1
                         if terminated or truncated:
                             break
+                            
 
                     # Keep on-policy transitions until the scheduled update.
                     numeric_metrics = {}
