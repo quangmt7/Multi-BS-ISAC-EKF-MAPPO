@@ -74,13 +74,13 @@ mappo_parameters:
   # ----------------------------------------------------------------------------
   penalties:
     c1_rate_qos: 0.2                   # c1 = 0.2: Phạt khi tốc độ UE không đạt: R_k < R_k^min (Hinge loss)
-    c2_sensing_reliability: 1.5        # c2 = 0.4: Phạt khi xác suất sensing không đạt: P_m^suc < P_m^min (Hinge loss)
-    c3_pos_uncertainty: 0.0            # Đã tích hợp trực tiếp vào hàm mục tiêu Sensing
-    c4_vel_uncertainty: 0.0            # Đã tích hợp trực tiếp vào hàm mục tiêu Sensing
+    c2_sensing_reliability: 0.2        # c2 = 0.4: Phạt khi xác suất sensing không đạt: P_m^suc < P_m^min (Hinge loss)
+    c3_pos_uncertainty: 0.1            # Đã tích hợp trực tiếp vào hàm mục tiêu Sensing
+    c4_vel_uncertainty: 0.1            # Đã tích hợp trực tiếp vào hàm mục tiêu Sensing
     penalty_rate_qos: 0.2              # Alias tương thích ngược
-    penalty_sensing_reliability: 0.4   # Alias tương thích ngược
-    penalty_uncertainty: 0.0           # Alias tương thích ngược
-    penalty_power_budget: 0.0          # Công suất được đảm bảo bằng action projection
+    penalty_sensing_reliability: 0.2   # Alias tương thích ngược
+    penalty_uncertainty: 0.2           # Alias tương thích ngược
+    penalty_power_budget: 0.5          # Công suất được đảm bảo bằng action projection
 
   # ----------------------------------------------------------------------------
   # 7. Ràng buộc chỉ tiêu QoS (QoS Thresholds)
