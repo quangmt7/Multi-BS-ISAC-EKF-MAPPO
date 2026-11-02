@@ -66,7 +66,7 @@ class MAPPOTrainer:
         self.resume_from = Path(resume_from) if resume_from is not None else None
         self._owns_environment = env is None
 
-    def run(self) -> list[dict[str, Any]]:
+    def run(self, sepBS) -> list[dict[str, Any]]:
         """Run training and return metrics produced in this process.
 
         Argument:
@@ -85,7 +85,7 @@ class MAPPOTrainer:
         seed = int(training.get("seed", 0))
 
         self._seed_everything(seed)
-        self.env = self.env if self.env is not None else self._create_environment()
+        self.env = self.env if self.env is not None else self._create_environment(sepBS)
 
         try:
             initial_local_obs, initial_global_state = self._reset_environment(seed)
@@ -190,6 +190,7 @@ class MAPPOTrainer:
                         update_metrics = self.agent.update(buffer)
                         numeric_metrics = self._numeric_metrics(update_metrics)
                         self.contract.finite_agent_parameters(self.agent)
+                        self.agent.update_learning_rate(episode, total_episodes)
 
                     record: dict[str, Any] = {
                         "episode": episode + 1,
@@ -220,12 +221,13 @@ class MAPPOTrainer:
 
             figure_paths = artifacts.render(metrics_path)
             print(f"figures saved to {artifacts.figures_dir} ({len(figure_paths)} PNG files)")
+            self.env.plot_sensing_resource_usage()
             return history
         finally:
             if self._owns_environment and callable(getattr(self.env, "close", None)):
                 self.env.close()
 
-    def _create_environment(self) -> Any:
+    def _create_environment(self, sepBS) -> Any:
         """Create the integrated ISAC environment.
 
         Argument:
@@ -243,7 +245,7 @@ class MAPPOTrainer:
                 "Integrate scenario, channel, sensing and communication before "
                 "starting real training."
             ) from exc
-        return MultiISACEnv(self.config)
+        return MultiISACEnv(self.config, sepBS)
 
     def _create_missing_agent_components(
         self, local_obs_dim: int, global_state_dim: int

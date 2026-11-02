@@ -1,5 +1,8 @@
 import numpy as np
 import math
+import os
+from ppo.utils.data_analy import run_analysis
+import matplotlib.pyplot as plt
 from scenario.scenario import Scenario
 from channel.channel import WirelessChannel
 from communication.communication import CommunicationManager
@@ -15,7 +18,7 @@ class MultiISACEnv:
     EKF target tracking, and MAPPO reinforcement learning interface.
     """
     
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, sepBS: bool):
         self.config = config
 
         # 1. System parameters
@@ -70,20 +73,28 @@ class MultiISACEnv:
         self.c1 = float(penalty_cfg.get("c1_rate_qos", penalty_cfg.get("c1", 0.2)))              
         self.c2 = float(penalty_cfg.get("c2_sensing_reliability", penalty_cfg.get("c2", 0.4)))   
         self.c3 = float(penalty_cfg.get("c3_pos_uncertainty", 0.0))
-        self.c4 = float(penalty_cfg.get("c4_vel_uncertainty", 0.0))           
+        self.c4 = float(penalty_cfg.get("c4_vel_uncertainty", 0.0))
+        self.c5 = float(penalty_cfg.get("c5_sens_freq", 0.0))
+        self.aoi_thr = float(penalty_cfg.get("aoi_thr", 0.0))
+        self.delta_u_pos = float(penalty_cfg.get("delta_u_pos", 0.0))
+        self.delta_u_vel = float(penalty_cfg.get("delta_u_vel", 0.0)) 
+        self.own_ep = 0       
 
         self.current_step: int = 0
         self.aoi: np.ndarray = np.zeros(self.num_targets, dtype=np.float32)
+        self.last_u_pos = np.zeros(self.num_targets, dtype=np.float32)
+        self.last_u_vel = np.zeros(self.num_targets, dtype=np.float32)
 
         # 3. Submodules initialization
+        self.sepBS = sepBS
         self.scenario = Scenario(self.config)
         self.channel = WirelessChannel(self.config)
         self.comm_managers = [
             CommunicationManager(self.config, bs_id=b) for b in range(self.num_bs)
         ]
         self.ekf_config = ekf_config
-        # For common EKF
         self.ekf_common = None
+        self.ekf_separate = []
         self.detection_list = [Detection(self.p_fa) for _ in range(self.num_bs)]
         self.measurement_list = [
             BSMeasurement(b, self.ekf_config)
@@ -91,27 +102,29 @@ class MultiISACEnv:
         ]
 
         # EKF common
-        self.ekf_common = EKF(
-            self.ekf_config["state_dim"], self.ekf_config["measurement_dim"],
-            self.num_targets, self.ekf_config["dt"],
-            self.ekf_config["process_noise"], 
-            self.ekf_config["initial_covariance"], False
-        )
-        # EKF for each BS
-        self.ekf_separate = []
-        for _ in range(self.num_bs):
-            self.ekf_separate.append(
-            EKF(
-            self.ekf_config["state_dim"], self.ekf_config["measurement_dim"],
-            self.num_targets, self.ekf_config["dt"],
-            self.ekf_config["process_noise"], 
-            self.ekf_config["initial_covariance"], False
-            ))
+        if sepBS == False:
+            self.ekf_common = EKF(
+                self.ekf_config["state_dim"], self.ekf_config["measurement_dim"],
+                self.num_targets, self.ekf_config["dt"],
+                self.ekf_config["process_noise"], 
+                self.ekf_config["initial_covariance"])
+        else:
+            # EKF for each BS
+            for _ in range(self.num_bs):
+                self.ekf_separate.append(
+                EKF(
+                self.ekf_config["state_dim"], self.ekf_config["measurement_dim"],
+                self.num_targets, self.ekf_config["dt"],
+                self.ekf_config["process_noise"], 
+                self.ekf_config["initial_covariance"]))
         
         # Initialize probability list
         self.prob_suc = np.zeros(self.num_targets)
         # Detection mask
         self.detect_mask = np.zeros((self.num_bs, self.num_targets))
+        self.prb = []
+        self.power = []
+        self.aoi_norm = []
 
     def reset(self, seed=None):
         """Reset the scenario and sample a reproducible EKF prior.
@@ -134,6 +147,8 @@ class MultiISACEnv:
             
         self.current_step = 0
         self.aoi = np.zeros(self.num_targets, dtype=np.float32)
+        self.last_u_pos = np.zeros(self.num_targets, dtype=np.float32)
+        self.last_u_vel = np.zeros(self.num_targets, dtype=np.float32)
 
         # Scenario.reset() returns a dictionary of network positions
         scen_data = self.scenario.reset(seed=seed)
@@ -141,10 +156,14 @@ class MultiISACEnv:
         self.ue_positions = scen_data["ue_positions"]
         self.target_states = scen_data["target_states"]
 
-        self.ekf_common.update_state(self.target_states)
         for b in range(self.num_bs):
             self.measurement_list[b].update_bs_pos(self.bs_positions[b])
-            self.ekf_separate[b].update_state(self.target_states)
+
+        if self.sepBS:
+            for b in range(self.num_bs):
+                self.ekf_separate[b].update_state(self.target_states)
+        else:
+            self.ekf_common.update_state(self.target_states)
         
         self.pred_target_states = self.target_states.copy()
 
@@ -177,11 +196,12 @@ class MultiISACEnv:
             Benchmark estimators should reuse copies of the sampled prior.
         """
         states = np.asarray(true_states, dtype=float)
+        ekf_ref = self.ekf_common if self.sepBS else self.ekf_separate[0]
         prior_seed = np.random.SeedSequence(seed).spawn(1)[0]
         prior_rng = np.random.default_rng(prior_seed)
         errors = prior_rng.multivariate_normal(
-            np.zeros(self.ekf_common.state_dim),
-            self.ekf_common.p_diag_init,
+            np.zeros(ekf_ref.state_dim),
+            ekf_ref.p_diag_init,
             size=states.shape[0],
         )
         return states + errors
@@ -256,7 +276,7 @@ class MultiISACEnv:
             
         return X_s, X_c, P_s, P_c
 
-    def _compute_reward(self, P_s, P_c, user_rates, p_suc, u_pos, u_vel, X_c=None):
+    def _compute_reward(self, P_s, P_c, user_rates, p_suc, u_pos, u_vel):
         """Compute the objective minus normalized constraint violations.
         Arguments:
             P_s (np.ndarray): Sensing transmit power matrix [num_bs, num_targets, num_prb] (Watts).
@@ -265,7 +285,7 @@ class MultiISACEnv:
             p_suc (np.ndarray): Detection / sensing success probabilities per target [num_targets].
             u_pos (np.ndarray): EKF position estimation uncertainty Tr(P_pos) per target [num_targets] (m^2).
             u_vel (np.ndarray): EKF velocity estimation uncertainty Tr(P_vel) per target [num_targets] (m^2/s^2).
-            X_c (np.ndarray, optional): Communication PRB allocation indicator [num_bs, num_ues, num_prb].
+            X_s (np.ndarray, optional): Sensing PRB allocation indicator [num_bs, num_ues, num_prb].
         Returns:
             reward (float): Scalar reward returned to PPO agent (R_t).
             r_obj (float): Weighted objective value: alpha * R_sensing + (1 - alpha) * R_comm.
@@ -294,19 +314,21 @@ class MultiISACEnv:
         user_rates_mbps = user_rates / 1e6
         
         # 1. R_sensing 
-        norm_aoi = np.mean(self.aoi) / self.a_max
-        a_bar = float(np.mean(np.exp(-k1*(self.aoi / self.a_max))))
+        #norm_aoi = np.mean(self.aoi / self.a_max)
+        a_bar = float(np.mean(np.exp(-k1*(self.aoi - self.aoi_thr / self.a_max))))
         u_pos_bar = float(np.mean(np.exp(-k2*(u_pos / self.u_pos_max))))
         u_vel_bar = float(np.mean(np.exp(-k2 * (u_vel / self.u_vel_max))))
-
-        r_sensing = self.beta * a_bar + (1.0 - self.beta) * (u_pos_bar+u_vel_bar)
         norm_power =  float(np.exp(-k3* (np.sum(P_s) + np.sum(P_c)) / (self.num_bs * self.p_max)))
+
+        r_sensing = self.beta * a_bar + (1.0 - self.beta - self.gamma) * (u_pos_bar+u_vel_bar) + self.gamma * norm_power
+        
         # 2. R_communication
         # pi_k = 1 if R_k(t) >= R_k^min
         pi_k = (user_rates_mbps >= self.r_min).astype(np.float32)
-        r_comm = float(np.exp(-k4*(np.sum(pi_k) / self.num_ues)))
+        r_comm = 1 - float(np.exp(-k4*(np.sum(pi_k) / self.num_ues)))
 
         # 3. R_penalty
+        violation_aoi = self.c5 * np.mean(np.maximum(0.0, (self.aoi - self.aoi_thr) / self.a_max)**2)
         # pen_qos 
         violation_rate = np.maximum(0.0, (self.r_min - user_rates_mbps) / self.r_min)
         pen_qos = self.c1 * float(np.mean(violation_rate**2))
@@ -316,14 +338,14 @@ class MultiISACEnv:
         pen_sensing = self.c2 * float(np.mean(violation_sensing**2))
 
         violation_pos = self.c3 * float(np.mean(np.maximum(
-            0.0, (u_pos - self.u_pos_max) / self.u_pos_max
+            0.0, (u_pos - self.u_pos_max) / self.u_pos_max, (u_pos - self.last_u_pos) / self.u_pos_max
         )**2))
 
         violation_vel = self.c4 * float(np.mean(np.maximum(
-            0.0, (u_vel - self.u_vel_max) / self.u_vel_max
+            0.0, (u_vel - self.u_vel_max) / self.u_vel_max, (u_vel - self.last_u_vel) / self.u_vel_max
         )**2))
 
-        r_penalty = pen_qos + pen_sensing + violation_pos + violation_vel
+        r_penalty = pen_qos + pen_sensing + violation_pos + violation_vel + violation_aoi
 
         # 4. Total reward
         r_obj = self.alpha * r_sensing + (1.0 - self.alpha) * r_comm
@@ -336,7 +358,7 @@ class MultiISACEnv:
             "r_penalty": r_penalty,
             "pen_qos": pen_qos,
             "pen_sensing": pen_sensing,
-            "norm_aoi": norm_aoi,
+            "norm_aoi": self.aoi / self.a_max,
             "norm_power": norm_power,
             "violation_qos": float(np.mean(violation_rate)),
             "violation_sensing": float(np.mean(violation_sensing)),
@@ -360,21 +382,37 @@ class MultiISACEnv:
             info (dict): Diagnostic and logging metrics
         """
         self.current_step += 1
+        self.own_ep += 1
         
         # 1. Action mapping
         X_s, X_c, P_s, P_c = self.action_mapping(actions_prb, actions_pwr)
+        self.power.append(np.sum(P_s) / (self.num_bs * self.p_max))
+        self.prb.append(np.sum(X_s) / (self.num_bs * self.n_prb))
         
         self.scenario.step_targets()
         self.target_states = self.scenario.get_target_states()
         target_pos = self.target_states[:, :3]  # True target coordinates (x, y, z)
     
         # 2. EKF predict (predict next target states for beamforming direction)
-        for m in range(self.num_targets):
-            self.ekf_common.predict(m)
+        if not self.sepBS:
+            for m in range(self.num_targets):
+                self.ekf_common.predict(m)
+            self.pred_target_states = np.asarray(
+                self.ekf_common.state_list, dtype=np.float32
+            )
+        else:
             for b in range(self.num_bs):
-                self.ekf_separate[b].predict(m)
-        self.pred_target_states = np.asarray(self.ekf_common.state_list, dtype=np.float32)
-        pred_target_pos = self.pred_target_states[:, :3]  # Predicted positions [M, 3]
+                for m in range(self.num_targets):
+                    self.ekf_separate[b].predict(m)
+            self.pred_target_states_by_bs = np.stack(
+                [np.asarray(ekf.state_list, dtype=np.float32)
+                 for ekf in self.ekf_separate], axis=0
+            )
+            # Keep the channel API unchanged; use the average local prediction.
+            self.pred_target_states = np.mean(
+                self.pred_target_states_by_bs, axis=0
+            ).astype(np.float32)
+        pred_target_pos = self.pred_target_states[:, :3]
         
         # 3. Channel simulation
         channel_out = self.channel.step(
@@ -446,43 +484,67 @@ class MultiISACEnv:
                         (self.bs_positions[i], measurement, covariance)
                     )
         
-        # 6. EKF state update & AoI update (both common and separate)
+        # 6. EKF state update & AoI update
         for m in range(self.num_targets):
-            if measurements_by_target[m]:
-                self.ekf_common.update(m, measurements_by_target[m])
-                self.aoi[m] = 0.0  # Reset AoI upon successful detection
+            if not self.sepBS:
+                # Shared EKF fuses all measurements available for target m.
+                if measurements_by_target[m]:
+                    self.ekf_common.update(m, measurements_by_target[m])
+                    self.aoi[m] = 0.0
+                else:
+                    self.aoi[m] += 1.0
             else:
-                self.aoi[m] += 1.0  # Increment AoI when target is missed
+                # Each local EKF receives only measurements from its own BS.
+                any_detection = False
+                for b in range(self.num_bs):
+                    if self.detect_mask[b, m] == 1:
+                        meas_b = [
+                            (pos, meas, cov)
+                            for pos, meas, cov in measurements_by_target[m]
+                            if np.allclose(pos, self.bs_positions[b], rtol=0.0, atol=1e-6)
+                        ]
+                        if meas_b:
+                            self.ekf_separate[b].update(m, meas_b)
+                            any_detection = True
+                if any_detection:
+                    self.aoi[m] = 0.0
+                else:
+                    self.aoi[m] += 1.0
 
-            # Each-BS Local EKF: update ONLY with local measurements of BS b
-            for b in range(self.num_bs):
-                if self.detect_mask[b, m] == 1:
-                    meas_b = [
-                        (pos, meas, cov) for pos, meas, cov in measurements_by_target[m]
-                        if np.array_equal(pos, self.bs_positions[b])
-                    ]
-                    if meas_b:
-                        self.ekf_separate[b].update(m, meas_b)
-                
-        # 7. Compute reward (Objective + Hinge loss penalties)
-        u_pos, u_vel = self.ekf_common.get_uncer()
-        
+        # 7. Compute reward from the active estimator mode.
+        u_pos, u_vel = self._get_uncertainty_summary()
+
+        self.aoi_norm.append(np.mean(self.aoi) / self.a_max)
+
         reward, _, _, reward_info = self._compute_reward(
             P_s=P_s,
             P_c=P_c,
             user_rates=user_rates,
             p_suc=self.prob_suc,
             u_pos=u_pos,
-            u_vel=u_vel,
-            X_c=X_c
+            u_vel=u_vel
         )          
 
-        sep_pos_list = [self.ekf_separate[b].get_uncer()[0] for b in range(self.num_bs)]
-        sep_vel_list = [self.ekf_separate[b].get_uncer()[1] for b in range(self.num_bs)]
-        u_pos_best_bs = float(np.mean(np.min(sep_pos_list, axis=0)))
-        u_vel_best_bs = float(np.mean(np.min(sep_vel_list, axis=0)))
-        u_pos_mean_bs = float(np.mean(np.mean(sep_pos_list, axis=0)))
-        u_vel_mean_bs = float(np.mean(np.mean(sep_vel_list, axis=0)))
+        # Save uncertainty for the next-step growth penalty.
+        self.last_u_pos = np.asarray(u_pos, dtype=np.float32).copy()
+        self.last_u_vel = np.asarray(u_vel, dtype=np.float32).copy()
+
+        if not self.sepBS:
+            u_pos_best_bs = float(np.mean(u_pos))
+            u_vel_best_bs = float(np.mean(u_vel))
+            u_pos_mean_bs = float(np.mean(u_pos))
+            u_vel_mean_bs = float(np.mean(u_vel))
+        else:
+            sep_pos_list = np.stack(
+                [ekf.get_uncer()[0] for ekf in self.ekf_separate], axis=0
+            )
+            sep_vel_list = np.stack(
+                [ekf.get_uncer()[1] for ekf in self.ekf_separate], axis=0
+            )
+            u_pos_best_bs = float(np.mean(np.min(sep_pos_list, axis=0)))
+            u_vel_best_bs = float(np.mean(np.min(sep_vel_list, axis=0)))
+            u_pos_mean_bs = float(np.mean(sep_pos_list))
+            u_vel_mean_bs = float(np.mean(sep_vel_list))
         
         # DEBUG
         #print(f"u_pos max: {np.max(u_pos)}, mean: {np.mean(u_pos)} lost: {np.mean(u_pos > self.u_pos_max)}\n"
@@ -529,6 +591,29 @@ class MultiISACEnv:
         info.update(reward_info)
         return next_local_obs, next_global_state, reward, terminated, truncated, info
 
+    def _get_uncertainty_summary(self):
+        """Return one [num_targets] uncertainty vector for reward/critic.
+
+        In shared mode this is the common EKF output. In separate mode it is
+        the mean across BS-local EKFs, keeping reward and critic dimensions fixed.
+        """
+        if not self.sepBS:
+            u_pos, u_vel = self.ekf_common.get_uncer()
+            return (np.asarray(u_pos, dtype=np.float32),
+                    np.asarray(u_vel, dtype=np.float32))
+
+        pos = np.stack([ekf.get_uncer()[0] for ekf in self.ekf_separate], axis=0)
+        vel = np.stack([ekf.get_uncer()[1] for ekf in self.ekf_separate], axis=0)
+        return pos.mean(axis=0).astype(np.float32), vel.mean(axis=0).astype(np.float32)
+
+    def _get_local_uncertainty(self, bs_index):
+        """Return uncertainty seen by one BS's local actor."""
+        if self.sepBS:
+            u_pos, u_vel = self.ekf_separate[bs_index].get_uncer()
+        else:
+            u_pos, u_vel = self.ekf_common.get_uncer()
+        return np.asarray(u_pos, dtype=np.float32), np.asarray(u_vel, dtype=np.float32)
+
     def _get_local_observations(self):
         """
         Construct local observation array o_b(t) for each BS b for the decentralized Actor.
@@ -550,10 +635,7 @@ class MultiISACEnv:
         Returns:
             local_obs_list (np.ndarray): Shape [B, local_obs_dim]
         """
-        u_pos, u_vel = self.ekf_common.get_uncer()
-        u_pos_norm = np.clip(u_pos / self.u_pos_max, 0.0, 1.0).astype(np.float32)  # [M]
-        u_vel_norm = np.clip(u_vel / self.u_vel_max, 0.0, 1.0).astype(np.float32)  # [M]
-        aoi_norm = np.clip(self.aoi / self.a_max, 0.0, 1.0).astype(np.float32)      # [M]
+        aoi_norm = np.clip(self.aoi / self.a_max, 0.0, 1.0).astype(np.float32)
 
         # Normalized predicted target coordinates [3 * M]
         pred_target_pos = self.pred_target_states[:, :3]
@@ -569,6 +651,10 @@ class MultiISACEnv:
 
         obs_list = []
         for b in range(self.num_bs):
+            u_pos_b, u_vel_b = self._get_local_uncertainty(b)
+            u_pos_norm = np.clip(u_pos_b / self.u_pos_max, 0.0, 1.0).astype(np.float32)
+            u_vel_norm = np.clip(u_vel_b / self.u_vel_max, 0.0, 1.0).astype(np.float32)
+
             # 1. Predicted distance from BS b to all targets [M]
             d_pred_b = np.zeros(self.num_targets, dtype=np.float32)
             for m in range(self.num_targets):
@@ -616,7 +702,7 @@ class MultiISACEnv:
             global_state (np.ndarray): Shape [global_state_dim]
         """
         # 1. Uncertainty & AoI: [M], [M], [M]
-        u_pos, u_vel = self.ekf_common.get_uncer()
+        u_pos, u_vel = self._get_uncertainty_summary()
         u_pos_norm = np.clip(u_pos / self.u_pos_max, 0.0, 1.0).astype(np.float32)
         u_vel_norm = np.clip(u_vel / self.u_vel_max, 0.0, 1.0).astype(np.float32)
         aoi_norm = np.clip(self.aoi / self.a_max, 0.0, 1.0).astype(np.float32)
@@ -652,3 +738,143 @@ class MultiISACEnv:
         ]).astype(np.float32)
 
         return global_state
+    
+    def plot_sensing_resource_usage(self):
+        """
+        Vẽ và lưu hai biểu đồ:
+        1. Tỷ lệ sử dụng PRB sensing theo aoi_norm.
+        2. Tỷ lệ sử dụng công suất sensing theo aoi_norm.
+
+        Các mẫu được gom vào từng khoảng aoi_norm nguyên:
+        [0, 1), [1, 2), [2, 3), ...
+
+        Lưu hình tại results/figures/.
+        """
+        import os
+        import numpy as np
+        import matplotlib.pyplot as plt
+
+        save_dir = "results/figures"
+
+        aoi_norm = np.asarray(self.aoi_norm, dtype=float).ravel()
+        prb_sensing_ratio = np.asarray(self.prb, dtype=float).ravel()
+        power_sensing_ratio = np.asarray(self.power, dtype=float).ravel()
+
+        # Kiểm tra dữ liệu
+        if not (
+            len(aoi_norm)
+            == len(prb_sensing_ratio)
+            == len(power_sensing_ratio)
+        ):
+            raise ValueError(
+                "aoi_norm, self.prb và self.power phải có cùng số phần tử."
+            )
+
+        if len(aoi_norm) == 0:
+            raise ValueError("Dữ liệu đầu vào không được rỗng.")
+
+        if not (
+            np.all(np.isfinite(aoi_norm))
+            and np.all(np.isfinite(prb_sensing_ratio))
+            and np.all(np.isfinite(power_sensing_ratio))
+        ):
+            raise ValueError("Dữ liệu chứa NaN hoặc giá trị vô hạn.")
+
+        if np.any(aoi_norm < 0):
+            raise ValueError("aoi_norm không được âm.")
+
+        # Gom nhóm theo khoảng AoI nguyên
+        aoi_group = np.floor(aoi_norm).astype(int)
+
+        x_min = int(np.min(aoi_group))
+        x_max = int(np.max(aoi_group))
+        x_bins = np.arange(x_min, x_max + 1)
+
+        x_valid = []
+        prb_mean = []
+        power_mean = []
+
+        for x_bin in x_bins:
+            mask = aoi_group == x_bin
+
+            if np.any(mask):
+                x_valid.append(x_bin)
+                prb_mean.append(
+                    np.mean(prb_sensing_ratio[mask])
+                )
+                power_mean.append(
+                    np.mean(power_sensing_ratio[mask])
+                )
+
+        x_valid = np.asarray(x_valid)
+        prb_mean = np.asarray(prb_mean)
+        power_mean = np.asarray(power_mean)
+
+        # Tạo thư mục lưu hình
+        os.makedirs(save_dir, exist_ok=True)
+
+        # Hình 1: PRB sensing
+        save_path = os.path.join(save_dir, "aoi_norm_prb.png")
+
+        fig, ax = plt.subplots(figsize=(8, 5))
+
+        ax.plot(
+            x_valid,
+            prb_mean,
+            marker="o",
+            markersize=5,
+            linewidth=1.8,
+            label="Sensing PRB ratio"
+        )
+
+        ax.set_xlabel("Normalized AoI ($AoI_{norm}$)", fontsize=12)
+        ax.set_ylabel("Mean sensing PRB usage ratio", fontsize=12)
+        ax.set_title("Sensing PRB Usage vs. Normalized AoI", fontsize=13)
+        ax.set_xticks(x_bins)
+        ax.grid(True, linestyle="--", alpha=0.5)
+        ax.legend()
+
+        fig.tight_layout()
+        fig.savefig(save_path, dpi=300, bbox_inches="tight")
+        plt.close(fig)
+
+        print(f"PRB figure saved to: {os.path.abspath(save_path)}")
+
+        # Hình 2: Công suất sensing
+        save_path = os.path.join(save_dir, "aoi_norm_power.png")
+
+        fig, ax = plt.subplots(figsize=(8, 5))
+
+        ax.plot(
+            x_valid,
+            power_mean,
+            marker="s",
+            markersize=5,
+            linewidth=1.8,
+            label="Sensing power ratio"
+        )
+
+        ax.set_xlabel("Normalized AoI ($AoI_{norm}$)", fontsize=12)
+        ax.set_ylabel("Mean sensing power usage ratio", fontsize=12)
+        ax.set_title("Sensing Power Usage vs. Normalized AoI", fontsize=13)
+        ax.set_xticks(x_bins)
+        ax.grid(True, linestyle="--", alpha=0.5)
+        ax.legend()
+
+        fig.tight_layout()
+        fig.savefig(save_path, dpi=300, bbox_inches="tight")
+        plt.close(fig)
+
+        print(f"Power figure saved to: {os.path.abspath(save_path)}")
+
+        prb_results, power_results = run_analysis(
+            self.aoi_norm,
+            self.prb,
+            self.power
+        )
+
+        #return {
+        #    "aoi_bins": x_valid,
+        #    "prb_mean": prb_mean,
+        #    "power_mean": power_mean,
+        #}

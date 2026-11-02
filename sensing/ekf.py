@@ -17,7 +17,7 @@ class EKF:
             True -> separate BS, False -> common 
     """
     def __init__(self, state_dim, measurement_dim, num_target, dt, process_noise, 
-                 initial_covariances, sepBS):
+                 initial_covariances):
         self.state_dim = state_dim
         self.measurement_dim = measurement_dim
         self.num_target = num_target

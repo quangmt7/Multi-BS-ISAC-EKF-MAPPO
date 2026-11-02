@@ -2,7 +2,7 @@ mappo_parameters:
   # 1. Hyperparameters thuật toán MAPPO / PPO
   ppo:
     lr_actor: 3.0e-4                   # Tốc độ học mạng Actor 
-    lr_critic: 1.0e-3                  # Tốc độ học mạng Critic
+    lr_critic: 5.0e-4                  # Tốc độ học mạng Critic
     gamma: 0.99                        # Hệ số chiết khấu phần thưởng (Discount factor gamma = 0.99)
     gae_lambda: 0.95                   # Hệ số GAE lambda = 0.95
     clip_epsilon: 0.2                  # Biên độ PPO clipping epsilon = 0.2
@@ -77,10 +77,15 @@ mappo_parameters:
     c2_sensing_reliability: 0.2        # c2 = 0.2: Phạt khi xác suất sensing không đạt: P_m^suc < P_m^min
     c3_pos_uncertainty: 0.1            # c3 = 0.1: Phạt khi bất định vị trí EKF vượt ngưỡng: U_pos > U_pos_max
     c4_vel_uncertainty: 0.1            # c4 = 0.1: Phạt khi bất định vận tốc EKF vượt ngưỡng: U_vel > U_vel_max
+    c5_sens_freq: 0.2                  # c5 = 0.2: Phạt khi sensing quá thường xuyên mà không cần thiết
+    #pero_max: 0.1                      # pero_max = 0.1: Ngưỡng tỷ lệ dùng PRB để phạt nếu vượt, phục vụ phạt c5 
     penalty_rate_qos: 0.2              # Alias tương thích ngược
     penalty_sensing_reliability: 0.2   # Alias tương thích ngược
     penalty_uncertainty: 0.2           # Alias tương thích ngược
     penalty_power_budget: 0.5          # Phạt khi tổng công suất BS vượt P_b^max (ràng buộc vật lý)
+    aoi_thr: 5                         # Ngưỡng aoi (cao hơn thì phải sensing, thấp hơn thì khuyến khích không sensing)
+    delta_u_pos: 20                    # Ngưỡng chênh lệch pos uncertainty (m)
+    delta_u_vel: 3                     # Ngưỡng chêch lệch vel uncertainty (m/s)
 
   # ----------------------------------------------------------------------------
   # 7. Ràng buộc chỉ tiêu QoS (QoS Thresholds)
@@ -98,7 +103,7 @@ mappo_parameters:
   # 9. Quản lý quá trình huấn luyện (Training & Rollout Management)
   # ----------------------------------------------------------------------------
   training:
-    total_episodes: 5000             # Tổng số episode huấn luyện
+    total_episodes: 3000             # Tổng số episode huấn luyện
     episode_length: 100              # T = 100 khe thời gian liên tiếp mỗi episode
     rollout_threads: 1                 # Số môi trường song song (nếu dùng vector env)
     save_interval: 50                  # Lưu checkpoint sau mỗi 50 episode
@@ -108,3 +113,4 @@ mappo_parameters:
     seed: 42                           # Random seed cố định để tái lập kết quả
   # Bỏ eval_interval vì không cần thiết, khó đánh giá khi chạy ep dài nên không cần thiết, 
   # có thể đánh giá qua biểu đồ cuối
+
