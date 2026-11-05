@@ -59,6 +59,9 @@ class MAPPOAgent:
         self.max_grad_norm = ppo_config.get("max_grad_norm")
         self.update_epochs = ppo_config.get("ppo_epochs")
         self.batch_size = ppo_config.get("batch_size")
+        self.initial_lractor = ppo_config.get("lr_actor")
+        self.initial_lr_critic = ppo_config.get("lr_critic")
+        self.min_lr_ratio = 0.2
         # get device
         device_str = train_config.get("device", "cpu")
         self.device= torch.device("cuda" if (device_str =="cuda" and torch.cuda.is_available()) else "cpu")
@@ -116,6 +119,28 @@ class MAPPOAgent:
                 logp.cpu().numpy(),
                 val.squeeze().item()
             )
+        
+    def update_learning_rate(self, current_episode, decay_episodes):
+        """
+        This function is used to update the learning rate
+        Argument:
+            current_episode (int): current episode
+            decay_episodes (int): total episode
+        """
+        progress = min(current_episode / decay_episodes, 1.0)
+
+        lr_actor = self.initial_lractor * (
+            1.0 - progress * (1.0 - self.min_lr_ratio)
+        )
+        lr_critic = self.initial_lr_critic * (
+            1.0 - progress * (1.0 - self.min_lr_ratio)
+        )
+
+        for param_group in self.actor_optimizer.param_groups:
+            param_group["lr"] = lr_actor
+
+        for param_group in self.critic_optimizer.param_groups:
+            param_group["lr"] = lr_critic
 
     def compute_gae(self, buffer):
         """

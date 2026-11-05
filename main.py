@@ -13,7 +13,7 @@ def main() -> None:
     Return:
         (None).
     """
-
+    # For common EKF first
     args = parse_args()
     if args.figures_only:
         paths = ResultArtifacts(args.output_dir).render_existing()
@@ -25,7 +25,7 @@ def main() -> None:
         output_dir=args.output_dir,
         resume_from=args.resume,
     )
-    trainer.run()
+    trainer.run(True)
 
 
 if __name__ == "__main__":
