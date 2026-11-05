@@ -190,7 +190,7 @@ class MAPPOTrainer:
                         update_metrics = self.agent.update(buffer)
                         numeric_metrics = self._numeric_metrics(update_metrics)
                         self.contract.finite_agent_parameters(self.agent)
-                        self.agent.update_learning_rate(episode, total_episodes)
+                        #self.agent.update_learning_rate(episode, total_episodes)
 
                     record: dict[str, Any] = {
                         "episode": episode + 1,
