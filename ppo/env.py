@@ -328,7 +328,7 @@ class MultiISACEnv:
         r_comm = 1 - float(np.exp(-k4*(np.sum(pi_k) / self.num_ues)))
 
         # 3. R_penalty
-        violation_aoi = self.c5 * np.mean(np.maximum(0.0, (self.aoi - self.aoi_thr) / self.a_max)**2)
+        violation_aoi = self.c5 * np.mean(np.maximum(0.0, (self.aoi_thr - self.aoi) / self.a_max)**2)
         # pen_qos 
         violation_rate = np.maximum(0.0, (self.r_min - user_rates_mbps) / self.r_min)
         pen_qos = self.c1 * float(np.mean(violation_rate**2))
