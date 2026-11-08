@@ -24,7 +24,7 @@ from sensing.detection import Detection
 from sensing.bs_measurement import BSMeasurement
 from sensing.ekf import EKF
 from sensing.pcrb import PCRB
-from ppo.AgentComponents import Actor
+from ppo.agents.AgentComponents import Actor
 from communication.communication import CommunicationManager
 
 

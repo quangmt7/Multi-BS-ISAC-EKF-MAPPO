@@ -69,6 +69,7 @@ class CommunicationManager:
             user_rates = np.sum(rate_per_prb, axis=(0, 2)).astype(np.float32)
         return user_rates
 
+
     def evaluate_qos(self, user_rates, X_c, flag=None):
         """
         Evaluate Quality of Service (QoS) satisfaction and compute penalty for DRL reward.

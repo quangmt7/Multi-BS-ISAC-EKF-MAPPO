@@ -3,9 +3,9 @@ import torch
 import torch.nn as nn
 # Import components from AgentComponents.py
 try:
-    from ppo.AgentComponents import Actor, Critic, MultiAgentRolloutBuffer
+    from ppo.agents.AgentComponents import Actor, Critic, MultiAgentRolloutBuffer
 except ImportError:
-    from AgentComponents import Actor, Critic, MultiAgentRolloutBuffer
+    from ppo.agents.AgentComponents import Actor, Critic, MultiAgentRolloutBuffer
 
 
 class MAPPOAgent:

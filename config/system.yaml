@@ -4,9 +4,11 @@ system_parameters:
   # 1. Quy mô hệ thống (Network Entities & Sets)
   # ----------------------------------------------------------------------------
   num_bs: 5                            # B = 5 trạm BS
-  num_ue: 10                            # K = 15 người dùng truyền thông (UEs)
-  num_target: 5                        # M = 15 mục tiêu di động cần theo dõi (Targets)
-  num_prb_bs: 51                         # N_PRB = 51 khối tài nguyên vật lý mỗi BS (PRBs)
+  num_embb: 2                          # số slice embb
+  num_urllc: 2                         # số slice urllc
+  num_ue_1embb: 3                      # số UE/1 slice embb
+  num_ue_1urllc: 3                     # số UE/1 slice urllc                     
+  num_target: 5                        # số mục tiêu di động cần theo dõi (Targets)
 
   # ----------------------------------------------------------------------------
   # 2. Cấu hình vô tuyến và OFDM 5G NR (Radio Resources & Numerology)
@@ -14,12 +16,12 @@ system_parameters:
   # SCS = 30 kHz (Numerology mu = 1), 1 PRB = 12 subcarriers * 30 kHz = 360 kHz
   # ----------------------------------------------------------------------------
   bandwidth_mhz_bs: 20.0                 # Băng thông mỗi BS: 20.0 MHz
+  bwp: [1,2]                           # BWP được dùng
+  nPrb: [51,51]                        # Số PRB mỗi BWP
+  pEach: [5,5]                         # Công suất mỗi PRB của BWP
   carrier_frequency_ghz: 3.5           # Tần số sóng mang trung tâm f_c = 3.5 GHz
-  subcarrier_spacing_khz: 30.0         # Khoảng cách sóng mang con (SCS) = 30.0 kHz
-  prb_bandwidth_khz: 360.0             # Băng thông 1 PRB: B_0 = B_PRB = 360.0 kHz
+  prbBW: 180.0                         # Khoảng cách của PRB = 180.0 kHz
   slot_duration_ms: 10.0               # Thời lượng 1 khe thời gian: Delta t = 10.0 ms = 0.01 s
-  max_tx_power_dbm: 35.0               # Công suất phát tối đa mỗi BS: P_max = 33.0 dBm
-  max_tx_power_watt: 3.162               # P_b^{max} dạng tuyến tính = 2.0 Watt (tương ứng 33 dBm)
 
   # ----------------------------------------------------------------------------
   # 3. Tạp âm nhiệt và đặc tính máy thu (Thermal Noise: B_0 * N_0)
@@ -110,6 +112,7 @@ system_parameters:
   # ----------------------------------------------------------------------------
   requirements:
     min_ue_rate_mbps: 1.0              # R_k^min = 1.0 Mbps (Tốc độ truyền thông tối thiểu yêu cầu)
+    max_ue_delay: 1.0                  # D_u^max = 1.0 ms (Trễ tối thiểu yêu cầu)
     min_sensing_success_prob: 0.50     # P_m^min = 0.90 (Xác suất sensing thành công tối thiểu)
     min_detection_prob: 0.50           # P_D^min = 0.90 (Xác suất phát hiện tối thiểu mỗi BS-target)
     max_prob_false_alarm: 1.0e-4       # P_F = 1.0e-4 (Xác suất báo động giả)

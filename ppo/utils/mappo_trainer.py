@@ -238,7 +238,7 @@ class MAPPOTrainer:
         """
 
         try:
-            from ppo.env import MultiISACEnv
+            from ppo.envs.env import MultiISACEnv
         except (ImportError, ModuleNotFoundError, SyntaxError) as exc:
             raise RuntimeError(
                 "ppo.env or one of its physical-model dependencies is not ready. "
@@ -263,7 +263,7 @@ class MAPPOTrainer:
         if self.agent is not None and self.buffer_factory is not None:
             return
         try:
-            from ppo.agent import MAPPOAgent, MultiAgentRolloutBuffer
+            from ppo.agents.agent import MAPPOAgent, MultiAgentRolloutBuffer
         except (ImportError, ModuleNotFoundError) as exc:
             raise RuntimeError(
                 "ppo.agent is unavailable on this branch. Merge the reviewed "

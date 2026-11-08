@@ -9,17 +9,22 @@ from communication.communication import CommunicationManager
 from sensing.detection import Detection
 from sensing.bs_measurement import BSMeasurement
 from sensing.ekf import EKF
+from abc import ABC, abstractmethod
 
 
-class MultiISACEnv:
+class BaseISACEnv(ABC):
     """
-    Multi-BS Integrated Sensing and Communication (ISAC) Environment.
+    Base Multi-BS Integrated Sensing and Communication (ISAC) Environment.
     Coordinates wireless channel simulation, communication scheduling, sensing detection,
     EKF target tracking, and MAPPO reinforcement learning interface.
+    This is base class for other environments for benchmark and framework 
+    config : configuration
+    cost_max : Cost max (for each type of cost) float[4]
+    bwp_mode : True if this class is for Multi-BWP, False for Single-BWP
     """
-    
-    def __init__(self, config: dict, sepBS: bool):
+    def __init__(self, config: dict, cost_max: list[float], bwp_mode: bool):
         self.config = config
+        self.bwp_mode = bwp_mode
 
         # 1. System parameters
         sys_config = config["system_parameters"]
@@ -29,15 +34,25 @@ class MultiISACEnv:
         scenario_config = sys_config["scenario"]
 
         self.num_bs = sys_config["num_bs"]
-        self.num_ues = sys_config["num_ue"]
+        self.num_embb = sys_config["num_embb"]
+        self.num_urllc = sys_config["num_urllc"]
+        self.num_slices = self.num_embb + self.num_urllc
+        self.num_ue_1embb = sys_config["num_ue_1embb"]
+        self.num_ue_1urllc = sys_config["num_ue_1urllc"]
         self.num_targets = sys_config["num_target"]
-        self.n_prb = sys_config["num_prb_bs"]
+        self.num_ue = self.num_embb * self.num_ue_1embb + self.num_urllc * self.num_ue_1urllc
 
         self.slot_duration = sys_config["slot_duration_ms"] / 1000.0  # Slot duration in seconds
         self.max_steps = sim_config["num_slots_per_episode"]
         
         # Power and scenario geometry limits
         self.p_max = float(sys_config["max_tx_power_watt"])
+        self.bwp = list(sys_config["bwp"])
+        self.nPrb = list(sys_config["nPrb"])
+        self.pEach = list(sys_config["pEach"])
+        self.prbBw = float(sys_config["prbBw"])
+        self.cost_gb = float(sys_config["cost_gb"])
+        self.cost_switch = float(sys_config["cost_switch"])
         self.noise_power = float(sys_config["noise_power_per_prb_watt"])
         
         lx = float(scenario_config["area_size_x_m"])
@@ -47,6 +62,7 @@ class MultiISACEnv:
 
         # System requirements
         self.r_min = float(req_config["min_ue_rate_mbps"])
+        self.d_max = float(req_config["max_ue_delay"])
         self.p_min_sensing = float(req_config["min_sensing_success_prob"])
         self.p_d_min = float(req_config["min_detection_prob"])
         self.p_fa = float(req_config["max_prob_false_alarm"])
@@ -59,7 +75,17 @@ class MultiISACEnv:
         
         self.alpha = float(reward_cfg["alpha_aoi"])                   
         self.beta = float(reward_cfg["beta_uncertainty"])              
-        self.gamma = float(reward_cfg["gamma_power"])                     
+        self.gamma = float(reward_cfg["gamma_power"]) 
+        self.required_bits_urllc = float(sys_config["urllc_packet_size_bits"])
+
+        # Number of bits that an UE gained
+        self.numBit = [[0 for _ in range(self.num_ue_1urllc)] for _ in range(self.num_urllc)]  
+        
+        # Latency for UEs of slice URLLC 
+        self.URLLC_Latency = [[0 for _ in range(self.num_ue_1urllc)] for _ in range(self.num_urllc)]  
+
+        # Throughput of UE eMBB
+        self.eMBB_Thr = np.array([[0 for _ in range(self.num_ue_1embb)] for _ in range(self.num_embb)], np.float64)                    
       
         self.a_max = float(norm_cfg["a_max"])                         
         self.u_pos_max = float(ekf_config["uncertainty_limits"]["u_pos_max"])
@@ -86,7 +112,6 @@ class MultiISACEnv:
         self.last_u_vel = np.zeros(self.num_targets, dtype=np.float32)
 
         # 3. Submodules initialization
-        self.sepBS = sepBS
         self.scenario = Scenario(self.config)
         self.channel = WirelessChannel(self.config)
         self.comm_managers = [
@@ -101,23 +126,12 @@ class MultiISACEnv:
             for b in range(self.num_bs)
         ]
 
-        # EKF common
-        if sepBS == False:
-            self.ekf_common = EKF(
-                self.ekf_config["state_dim"], self.ekf_config["measurement_dim"],
-                self.num_targets, self.ekf_config["dt"],
-                self.ekf_config["process_noise"], 
-                self.ekf_config["initial_covariance"])
-        else:
-            # EKF for each BS
-            for _ in range(self.num_bs):
-                self.ekf_separate.append(
-                EKF(
-                self.ekf_config["state_dim"], self.ekf_config["measurement_dim"],
-                self.num_targets, self.ekf_config["dt"],
-                self.ekf_config["process_noise"], 
-                self.ekf_config["initial_covariance"]))
-        
+        self.ekf_common = EKF(
+            self.ekf_config["state_dim"], self.ekf_config["measurement_dim"],
+            self.num_targets, self.ekf_config["dt"],
+            self.ekf_config["process_noise"], 
+            self.ekf_config["initial_covariance"])
+
         # Initialize probability list
         self.prob_suc = np.zeros(self.num_targets)
         # Detection mask
@@ -125,6 +139,20 @@ class MultiISACEnv:
         self.prb = []
         self.power = []
         self.aoi_norm = []
+
+        # For BWP usage
+        # Matrix shows if slice used BWP, with binary value
+        self.BWP_slice = [[[0 for _ in range(self.num_slices + self.num_targets)] for _ in range(len(self.bwp))] \
+                          for _ in range(self.num_bs)]
+        self.last_BWP_slice = [[[0 for _ in range(self.num_slices + self.num_targets)] for _ in range(len(self.bwp))] \
+                          for _ in range(self.num_bs)]
+        self.cost_max = cost_max
+        # DQN agent của RU
+        self.dqn_agent = None
+
+    def assign_agent(self, agent):
+        """Gán DQN agent để dùng khi FrameEnv gọi env.select_action(), bắt buộc"""
+        self.dqn_agent = agent
 
     def reset(self, seed=None):
         """Reset the scenario and sample a reproducible EKF prior.
@@ -206,14 +234,13 @@ class MultiISACEnv:
         )
         return states + errors
 
-    def action_mapping(self, actions_prb, actions_pwr):
+    def action_mapping(self, actions_prb):
         """
         Map policy action outputs to PRB allocations and transmit powers.
         
         Args:
             actions_prb: PRB destination choices [B, R], values in [0, M + K]
-                         0: idle, 1..M: sensing targets, M+1..M+K: communication UEs
-            actions_pwr: Normalized continuous power actions [B, R], values in [0, 1]
+                        0: idle, 1..M: sensing targets, M+1..M+K: communication UEs
             
         Returns:
             X_s: Sensing PRB allocation indicator [B, M, R]
@@ -276,16 +303,15 @@ class MultiISACEnv:
             
         return X_s, X_c, P_s, P_c
 
-    def _compute_reward(self, P_s, P_c, user_rates, p_suc, u_pos, u_vel):
+    def _compute_reward(self, user_rates, user_delay, cost, p_suc, u_pos, u_vel):
         """Compute the objective minus normalized constraint violations.
         Arguments:
-            P_s (np.ndarray): Sensing transmit power matrix [num_bs, num_targets, num_prb] (Watts).
-            P_c (np.ndarray): Communication transmit power matrix [num_bs, num_ues, num_prb] (Watts).
-            user_rates (np.ndarray): Achieved data rates per UE [num_ues] (bps).
+            user_rates (np.ndarray): Achieved data rates per UE [num_embb][num_ue_1embb] (bps).
+            user_delay (np.ndarray): Achieved delay per UE [num_urllc][num_ue_1urllc] (ms)
+            cost (np.ndarray): Cost for BWP (energy, switching, fragmentation, guardband) [4]
             p_suc (np.ndarray): Detection / sensing success probabilities per target [num_targets].
             u_pos (np.ndarray): EKF position estimation uncertainty Tr(P_pos) per target [num_targets] (m^2).
             u_vel (np.ndarray): EKF velocity estimation uncertainty Tr(P_vel) per target [num_targets] (m^2/s^2).
-            X_s (np.ndarray, optional): Sensing PRB allocation indicator [num_bs, num_ues, num_prb].
         Returns:
             reward (float): Scalar reward returned to PPO agent (R_t).
             r_obj (float): Weighted objective value: alpha * R_sensing + (1 - alpha) * R_comm.
@@ -295,17 +321,17 @@ class MultiISACEnv:
                 - 'r_sensing': Sensing objective score.
                 - 'r_comm': Communication QoS satisfaction ratio.
                 - 'r_penalty': Total penalty subtracted.
-                - 'pen_qos': Scaled penalty for communication rate violations.
                 - 'pen_sensing': Scaled penalty for sensing probability violations.
                 - 'norm_aoi': Normalized AoI metric (A_bar / A_max).
-                - 'norm_power': Normalized total transmit power consumed across all BSs.
-                - 'violation_qos': Average normalized QoS violation across UEs.
+                - 'cost': Cost for BWP (energy, switching, fragmentation, guardband),
+                - 'suc_embb': sucess rate for embb,
+                - 'suc_urllc': sucess rate for urllc,
                 - 'violation_sensing': Average normalized sensing violation across targets.
         """
         # This is for temporary function to transform rate -> output used in reward
         k1 = 1
         k2 = 1
-        k3 = 1
+        #k3 = 1
         k4 = 1
         u_pos = np.asarray(u_pos, dtype=np.float32)
         u_vel = np.asarray(u_vel, dtype=np.float32)
@@ -318,37 +344,33 @@ class MultiISACEnv:
         a_bar = float(np.mean(np.exp(-k1*(self.aoi - self.aoi_thr / self.a_max))))
         u_pos_bar = float(np.mean(np.exp(-k2*(u_pos / self.u_pos_max))))
         u_vel_bar = float(np.mean(np.exp(-k2 * (u_vel / self.u_vel_max))))
-        norm_power =  float(np.exp(-k3* (np.sum(P_s) + np.sum(P_c)) / (self.num_bs * self.p_max)))
-
-        r_sensing = self.beta * a_bar + (1.0 - self.beta - self.gamma) * (u_pos_bar+u_vel_bar) + self.gamma * norm_power
+        cost_rate = [cost[i] / self.cost_max[i] for i in range(4)]
+        r_sensing = self.beta * a_bar + (1.0 - self.beta) * (u_pos_bar+u_vel_bar)
         
         # 2. R_communication
-        # pi_k = 1 if R_k(t) >= R_k^min
-        pi_k = (user_rates_mbps >= self.r_min).astype(np.float32)
-        r_comm = 1 - float(np.exp(-k4*(np.sum(pi_k) / self.num_ues)))
+        # pi_e = 1 if R_k(t) >= R_k^min
+        pi_e = (user_rates_mbps >= self.r_min).astype(np.float32)
+        # pi_u = 1 if D_u(t) <= D_u^max
+        pi_u = (user_delay <= self.d_max).astype(np.float32)
+        r_comm = 1 - float(np.exp(-k4*((pi_e + pi_u) / self.num_ue)))
 
         # 3. R_penalty
         violation_aoi = self.c5 * np.mean(np.maximum(0.0, (self.aoi_thr - self.aoi) / self.a_max)**2)
-        # pen_qos 
-        violation_rate = np.maximum(0.0, (self.r_min - user_rates_mbps) / self.r_min)
-        pen_qos = self.c1 * float(np.mean(violation_rate**2))
 
         # pen_sensing
         violation_sensing = np.maximum(0.0, (self.p_min_sensing - p_suc) / self.p_min_sensing)
         pen_sensing = self.c2 * float(np.mean(violation_sensing**2))
 
         violation_pos = self.c3 * float(np.mean(np.maximum(
-            0.0, (u_pos - self.u_pos_max) / self.u_pos_max, (u_pos - self.last_u_pos) / self.u_pos_max
-        )**2))
+            0.0, (u_pos - self.u_pos_max) / self.u_pos_max)**2))
 
         violation_vel = self.c4 * float(np.mean(np.maximum(
-            0.0, (u_vel - self.u_vel_max) / self.u_vel_max, (u_vel - self.last_u_vel) / self.u_vel_max
-        )**2))
+            0.0, (u_vel - self.u_vel_max) / self.u_vel_max)**2))
 
-        r_penalty = pen_qos + pen_sensing + violation_pos + violation_vel + violation_aoi
+        r_penalty = pen_sensing + violation_pos + violation_vel + violation_aoi
 
         # 4. Total reward
-        r_obj = self.alpha * r_sensing + (1.0 - self.alpha) * r_comm
+        r_obj = self.alpha * r_sensing + self.gamma * r_comm + (1 - self.alpha - self.gamma) * cost_rate
         reward = float(r_obj - r_penalty)
 
         reward_info = {
@@ -356,23 +378,24 @@ class MultiISACEnv:
             "r_sensing": r_sensing,
             "r_comm": r_comm,
             "r_penalty": r_penalty,
-            "pen_qos": pen_qos,
+            #"pen_qos": pen_qos,
             "pen_sensing": pen_sensing,
             "norm_aoi": self.aoi / self.a_max,
-            "norm_power": norm_power,
-            "violation_qos": float(np.mean(violation_rate)),
+            #"norm_power": norm_power,
+            #"violation_qos": float(np.mean(violation_rate)),
+            "cost": cost,
+            "suc_embb": pi_e / self.num_ue_1embb * self.num_embb,
+            "suc_urllc": pi_u / self.num_ue_1urllc * self.num_urllc,
             "violation_sensing": float(np.mean(violation_sensing)),
         }
         return reward, r_obj, r_penalty, reward_info
 
-    def step(self, actions_prb, actions_pwr):
+    def step(self, actions_prb):
         """
         Execute one environment transition step.
         
         Args:
             actions_prb: PRB destination choices for each BS [B, R]
-            actions_pwr: Continuous power allocation weights for each BS [B, R]
-            
         Returns:
             next_local_obs (np.ndarray): Next local observations for all BSs [B, local_obs_dim]
             next_global_state (np.ndarray): Next centralized state vector [global_state_dim]
@@ -385,39 +408,22 @@ class MultiISACEnv:
         self.own_ep += 1
         
         # 1. Action mapping
-        X_s, X_c, P_s, P_c = self.action_mapping(actions_prb, actions_pwr)
-        self.power.append(np.sum(P_s) / (self.num_bs * self.p_max))
-        self.prb.append(np.sum(X_s) / (self.num_bs * self.n_prb))
+        X_s, X_c = self.action_mapping(actions_prb)
         
         self.scenario.step_targets()
         self.target_states = self.scenario.get_target_states()
         target_pos = self.target_states[:, :3]  # True target coordinates (x, y, z)
     
         # 2. EKF predict (predict next target states for beamforming direction)
-        if not self.sepBS:
-            for m in range(self.num_targets):
-                self.ekf_common.predict(m)
-            self.pred_target_states = np.asarray(
-                self.ekf_common.state_list, dtype=np.float32
-            )
-        else:
-            for b in range(self.num_bs):
-                for m in range(self.num_targets):
-                    self.ekf_separate[b].predict(m)
-            self.pred_target_states_by_bs = np.stack(
-                [np.asarray(ekf.state_list, dtype=np.float32)
-                 for ekf in self.ekf_separate], axis=0
-            )
-            # Keep the channel API unchanged; use the average local prediction.
-            self.pred_target_states = np.mean(
-                self.pred_target_states_by_bs, axis=0
-            ).astype(np.float32)
+        for m in range(self.num_targets):
+            self.ekf_common.predict(m)
+        self.pred_target_states = np.asarray(
+            self.ekf_common.state_list, dtype=np.float32
+        )
         pred_target_pos = self.pred_target_states[:, :3]
         
         # 3. Channel simulation
         channel_out = self.channel.step(
-            P_c=P_c,
-            P_s=P_s,
             X_c=X_c,
             X_s=X_s,
             bs_pos=self.bs_positions,
@@ -429,32 +435,99 @@ class MultiISACEnv:
         effective_sensing_sinr = channel_out["effective_sensing_sinr"]# [B, M]
         
         # 4. Communication: compute SINR, spectral efficiency, and user rates
-        user_rates = np.zeros(self.num_ues, dtype=np.float32)
-        sinr_comm = np.zeros((self.num_bs, self.num_ues, self.n_prb), dtype=np.float32)
-        comm_power_by_bs = np.sum(P_c, axis=1)
+        # reset bits received in current slot
+        current_bits = np.zeros(
+            (self.num_urllc, self.num_ue_1urllc),
+            dtype=np.float32
+        )
+        sinr_comm = []
         for b in range(self.num_bs):
-            # Cắt lát ma trận của riêng BS b: shape (K, R)
-            x_b = X_c[b]
-            p_b = P_c[b]
-            gain_b = comm_gain[b]
-            # BS b tự tính SINR và throughput cục bộ
-            other_bs_interference = self.channel.ibi_eta * np.sum(
-                comm_power_by_bs[np.arange(self.num_bs) != b, np.newaxis, :]
-                * comm_gain[np.arange(self.num_bs) != b], axis=0
-            )
-            sinr_b, se_b = self.comm_managers[b].compute_sinr(
-                x_b, p_b, gain_b, inter_bs_interf=other_bs_interference
-            )
-            rate_b = self.comm_managers[b].compute_user_rates(x_b, se_b)
-            # Cộng dồn throughput các BS cấp cho UE (CoMP)
-            user_rates += rate_b
-            sinr_comm[b] = sinr_b
-            # H_avg comm of BS b [K] (average spectral efficiency of PRB)
-            self.last_h_comm[b] = np.mean(se_b, axis=1).astype(np.float32)
-        user_rates_mbps = user_rates / 1e6  # [K] (Mbps)
-        # Update average spectral efficiency features H_avg cho sensing
-        self.last_h_sens = np.mean(
-            np.log2(1.0 + np.maximum(channel_out["sensing_sinr_prb"], 0.0)), axis=2
+            bs_se_list = []
+            for w in range(len(self.bwp)):
+                x_b_w = X_c[b][w]
+                gain_b_w = comm_gain[b][w]
+                sinr_b_w, se_b_w = self.comm_managers[b].compute_sinr(
+                    x_b_w,
+                    gain_b_w
+                )
+                sinr_comm.append(sinr_b_w)
+                bs_se_list.append(se_b_w)
+
+                # ==================================================
+                # eMBB throughput
+                # ==================================================
+                for s in range(self.num_embb):
+                    for e in range(self.num_ue_1embb):
+                        self.eMBB_Thr[s][e] += (
+                            self.comm_managers[b]
+                            .compute_embb_rate(
+                                slice_id=s,
+                                ue_id=e,
+                                bwp_id=w,
+                                se=se_b_w
+                            )
+                        )
+
+                # ==================================================
+                # URLLC received bits
+                # ==================================================
+
+                for s in range(self.num_urllc):
+
+                    for u in range(self.num_ue_1urllc):
+
+                        current_bits[s][u] += (
+                            self.comm_managers[b]
+                            .compute_urllc_bits(
+                                slice_id=s,
+                                ue_id=u,
+                                bwp_id=w,
+                                se=se_b_w
+                            )
+                        )
+
+            # ======================================================
+            # H_avg communication feature
+            # ======================================================
+            if len(bs_se_list) > 0:
+                se_concat = np.concatenate(
+                    bs_se_list,
+                    axis=-1
+                )
+                self.last_h_comm[b] = np.mean(
+                    se_concat,
+                    axis=1
+                ).astype(np.float32)
+        # ======================================================
+        # Update URLLC queues
+        # ======================================================
+        for s in range(self.num_urllc):
+            for u in range(self.num_ue_1urllc):
+                self.numBit[s][u] += current_bits[s][u]
+                # packet completed
+                if self.numBit[s][u] >= self.required_bits_urllc:
+                    self.URLLC_Latency[s][u] = 0.0
+                    self.numBit[s][u] = 0.0
+                else:
+                    self.URLLC_Latency[s][u] += (
+                        self.slot_duration * 1000.0
+                    )
+        # ======================================================
+        # Statistics for logging
+        # ======================================================
+        embb_thr_mbps = (
+            np.asarray(self.eMBB_Thr)
+            / 1e6
+        )
+        urllc_latency_ms = np.asarray(
+            self.URLLC_Latency,
+            dtype=np.float32
+        )
+        # ======================================================
+        # Sensing feature
+        # ======================================================
+        self.last_h_sens = np.mean(np.log2(1.0 + np.maximum(channel_out["sensing_sinr_prb"],0.0)),
+            axis=2
         ).astype(np.float32)
         
         # 5. Sensing: Each BS detect and build their detect maps
@@ -514,12 +587,24 @@ class MultiISACEnv:
         # 7. Compute reward from the active estimator mode.
         u_pos, u_vel = self._get_uncertainty_summary()
 
+        # ==================================================
+        # Cost calculation
+        # ==================================================
+        energy_cost = self.calculateEnergy(X_c=X_c, X_s=X_s)
+        switch_cost = self.calculateSwitch()
+        frag_cost = self.calculateFrag()
+        guard_cost = self.calculateGuardBand()
+        cost = np.array(
+            [energy_cost, switch_cost, frag_cost, guard_cost],
+            dtype=np.float32,
+        )
+
         self.aoi_norm.append(np.mean(self.aoi) / self.a_max)
 
         reward, _, _, reward_info = self._compute_reward(
-            P_s=P_s,
-            P_c=P_c,
-            user_rates=user_rates,
+            user_rates=self.eMBB_Thr,
+            user_delay=self.URLLC_Latency,
+            cost=cost,
             p_suc=self.prob_suc,
             u_pos=u_pos,
             u_vel=u_vel
@@ -566,8 +651,19 @@ class MultiISACEnv:
         pos_errors = np.linalg.norm(self.pred_target_states[:, :3] - target_pos, axis=1)
         vel_errors = np.linalg.norm(self.pred_target_states[:, 3:6] - target_vel, axis=1)
         num_served_ues = float(np.sum(np.sum(X_c, axis=(0, 2)) > 0))
-        num_qos_ues = float(np.sum(user_rates_mbps >= self.r_min))
+        num_qos_ues = float(np.sum(self.eMBB_Thr >= self.r_min) + \
+                            np.sum(self.URLLC_Latency <= self.d_max))
 
+        if ((self.current_step / 100) >= 3500) and (self.current_step % 100 == 0):
+            print("-----/-----\n")
+            print(f"mean vel: {np.mean(vel_errors)} pos: {np.mean(pos_errors)} \n")
+            print(f"median vel: {np.median(vel_errors)} pos: {np.median(pos_errors)} \n")
+            print(f"std vel: {np.std(vel_errors)} pos: {np.std(pos_errors)} \n")
+            print(f"p90 vel: {np.percentile(vel_errors, 0.9)} pos: {np.percentile(pos_errors, 0.9)} \n")
+            print(f"p95 vel: {np.percentile(vel_errors, 0.95)} pos: {np.percentile(pos_errors, 0.95)} \n")
+            print(f"max vel: {np.max(vel_errors)} pos: {np.max(pos_errors)} \n")
+            print(f"suc vel: {np.count_nonzero(vel_errors > self.u_vel_max)} pos: {np.count_nonzero(pos_errors > self.u_pos_max)} \n")
+                
         info = {
             "step": self.current_step,
             "target_pos_mean_m": float(np.mean(np.linalg.norm(target_pos, axis=1))),
@@ -579,14 +675,18 @@ class MultiISACEnv:
             "aoi_mean": float(np.mean(self.aoi)),
             "u_pos_mean": float(np.mean(u_pos)),
             "u_vel_mean": float(np.mean(u_vel)),
-            "comm_rate_mean_mbps": float(np.mean(user_rates_mbps)),
-            "qos_satisfaction_rate": float(np.mean(user_rates_mbps >= self.r_min)),
+            "qos_eMBB_rate": float(np.mean(self.eMBB_Thr >= self.r_min)),
+            "qos_URLLC_rate": float(np.mean(self.URLLC_Latency <= self.d_max)),
             "sensing_success_prob_mean": float(np.mean(self.prob_suc)),
             "lost_target": lost_target,
             "u_pos_best_local_bs": u_pos_best_bs,
             "u_vel_best_local_bs": u_vel_best_bs,
             "u_pos_mean_local_bs": u_pos_mean_bs,
             "u_vel_mean_local_bs": u_vel_mean_bs,
+            "energy_cost": float(energy_cost),
+            "switch_cost": float(switch_cost),
+            "fragmentation_cost": float(frag_cost),
+            "guardband_cost": float(guard_cost),
         }
         info.update(reward_info)
         return next_local_obs, next_global_state, reward, terminated, truncated, info
@@ -690,54 +790,75 @@ class MultiISACEnv:
 
         return np.stack(obs_list, axis=0)
 
+    def calculateEnergy(self, X_c, X_s):
+        """
+        Calculate energy cost
+        Args:
+            X_c: Allocation for comm UE (eMBB & URLLC) [b][w][s][u][r]
+            X_p: Allocation for targets [b][w][m][r]
+        Return:
+            energy: Energy cost
+        """
+        energy = 0
+        for b in range(self.num_bs):
+            for w in range(len(self.bwp)):
+                energy += (np.count_nonzero(X_c[b][w]) + np.count_nonzero(X_s[b][w])) * \
+                           self.pEach[w] * self.slot_duration
+
+        return energy
+    
+    def calculateSwitch(self):
+        """
+        Calculate BWP switching cost
+        Args:
+        Return:
+            switch (float): switching cost 
+        """
+        switch = 0
+        for b in range(self.num_bs):
+            for w in range(len(self.bwp)):
+                for s in range(self.num_slices + self.num_targets):
+                    switch += self.cost_switch * self.BWP_slice[b][w][s] * (1 - self.last_BWP_slice[b][w][s])
+        return switch
+    
+    def calculateFrag(self):
+        """
+        Calculate BWP fragmentation cost
+        Args:
+        Return:
+            frag (float): fragmentation cost
+        """
+        frag = 0
+        for b in range(self.num_bs):
+            for s in range(self.num_slices + self.num_targets):
+                frag += (np.sum(self.BWP_slice[b][w][s] for w in range(len(self.bwp))))**2
+        return frag
+    
+    def calculateGuardBand(self):
+        """
+        Calculate BWP guardband cost
+        Args:
+        Return:
+            guard (float): guardband cost
+        """
+        guard = 0
+        for b in range(self.num_bs):
+            for w in range(len(self.bwp)):
+                for wk in range(len(self.bwp)):
+                    if wk != w:
+                        for s in range(self.num_slices + self.num_targets):
+                            guard += self.cost_gb * np.abs(w - wk) * self.BWP_slice[b][w][s] * self.BWP_slice[b][wk][s]
+        return guard
+
+    @abstractmethod
     def _get_global_state(self):
         """
         Construct global state vector S_t for the Centralized Critic:
-        S_t = [ {U~_m^pos}, {U~_m^vel}, {A~_m}, {d~_{b,m}^pred},
-                {H~_{b,k}^avg}, {H~_{b,m}^avg}, {P~_b^res}, {N~_b^res} ]
-                
-        Total dimension: 3*M + 2*B*M + B*K + 2*B.
         
         Returns:
             global_state (np.ndarray): Shape [global_state_dim]
         """
-        # 1. Uncertainty & AoI: [M], [M], [M]
-        u_pos, u_vel = self._get_uncertainty_summary()
-        u_pos_norm = np.clip(u_pos / self.u_pos_max, 0.0, 1.0).astype(np.float32)
-        u_vel_norm = np.clip(u_vel / self.u_vel_max, 0.0, 1.0).astype(np.float32)
-        aoi_norm = np.clip(self.aoi / self.a_max, 0.0, 1.0).astype(np.float32)
-
-        # 2. Predicted relative distances d~_{b,m}^pred: [B * M]
-        pred_target_pos = self.pred_target_states[:, :3]
-        d_pred = np.zeros((self.num_bs, self.num_targets), dtype=np.float32)
-        for b in range(self.num_bs):
-            for m in range(self.num_targets):
-                dist = float(np.linalg.norm(pred_target_pos[m] - self.bs_positions[b]))
-                d_pred[b, m] = np.clip(dist / self.d_max, 0.0, 1.0)
-        d_pred_flat = d_pred.flatten()
-
-        # 3. Spectral efficiency features normalized to [0, 1]: [B * K] and [B * M]
-        h_comm_norm = np.clip(self.last_h_comm / self.se_comm_scale, 0.0, 1.0).astype(np.float32)
-        h_sens_norm = np.clip(self.last_h_sens / self.se_sens_scale, 0.0, 1.0).astype(np.float32)
-        h_comm_flat = h_comm_norm.flatten()
-        h_sens_flat = h_sens_norm.flatten()
-
-        # 4. Residual resources: [B] and [B]
-        p_res_norm = np.clip(self.p_res / self.p_max, 0.0, 1.0).astype(np.float32)
-        n_res_norm = np.clip(self.n_res / self.n_prb, 0.0, 1.0).astype(np.float32)
-
-        global_state = np.concatenate([
-            u_pos_norm,     # [M]
-            u_vel_norm,     # [M]
-            aoi_norm,       # [M]
-            d_pred_flat,    # [B * M]
-            h_comm_flat,    # [B * K]
-            h_sens_flat,    # [B * M]
-            p_res_norm,     # [B]
-            n_res_norm      # [B]
-        ]).astype(np.float32)
-
-        return global_state
+        pass
     
     def plot_sensing_resource_usage(self):
         """
