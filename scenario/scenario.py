@@ -40,26 +40,14 @@ class BaseStation:
 # =============================================================================
 class UserEquipment:
     """
-    Đại diện cho người dùng truyền thông (UE).
-
-    Theo thiết lập hệ thống:
-    - UE là thiết bị đơn antenna (num_antennas = 1).
-    - Độ lợi antenna thu: G_rx_ue = 0.0 dBi (Ăng-ten vô hướng, dạng tuyến tính = 1.0).
-    - Vị trí tĩnh trong suốt 1 episode (quasi-static).
-
-    Parameters
-    ----------
-    ue_id : int
-        Chỉ số định danh UE (0-indexed: k in {0, ..., K-1}).
-    position : np.ndarray, shape (3,)
-        Tọa độ 3D của UE: [x_k, y_k, z_k] (mét).
+    Communication UE.
+    Each UE belongs to exactly one slice.
     """
-    def __init__(self, ue_id: int, position: np.ndarray):
-        self.ue_id    = int(ue_id)
+    def __init__(self, ue_id: int, slice_id: int, service_type: str, position: np.ndarray):
+        self.ue_id = int(ue_id)
+        self.slice_id = int(slice_id)
+        self.service_type = str(service_type)
         self.position = np.asarray(position, dtype=np.float64)
-
-    def __repr__(self) -> str:
-        return f"UserEquipment(id={self.ue_id}, pos={self.position.tolist()})"
 
 
 # =============================================================================

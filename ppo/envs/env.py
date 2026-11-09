@@ -146,7 +146,15 @@ class BaseISACEnv(ABC):
                           for _ in range(self.num_bs)]
         self.last_BWP_slice = [[[0 for _ in range(self.num_slices + self.num_targets)] for _ in range(len(self.bwp))] \
                           for _ in range(self.num_bs)]
-        self.cost_max = cost_max
+        # Calculate cost max here (only calculate once, just for DQN and PPO
+        # When using this with SAC state, please multiply this with num_bs 
+        self.cost_max = [0,0,0,0]
+        for w in range(len(self.bwp)):
+            self.cost_max[0] += self.nPrb[w] * self.pEach[w] * self.slot_duration
+        self.cost_max[1] = (self.num_targets + self.num_slices) * self.cost_switch * len(self.bwp)
+        self.cost_max[2] = (self.num_targets + self.num_slices) * self.num_bs * len(self.bwp)
+        self.cost_max[3] = self.cost_gb * (max(self.bwp) - min(self.bwp)) * \
+                           self.num_bs * (len(self.bwp) * (len(self.bwp)-1))
         # DQN agent của RU
         self.dqn_agent = None
 

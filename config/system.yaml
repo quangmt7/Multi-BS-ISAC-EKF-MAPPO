@@ -19,6 +19,8 @@ system_parameters:
   bwp: [1,2]                           # BWP được dùng
   nPrb: [51,51]                        # Số PRB mỗi BWP
   pEach: [5,5]                         # Công suất mỗi PRB của BWP
+  fStart: [0, 10]                      # Tần số trung tâm tại PRB đầu tiên (kHz) (tham chiếu thôi nhé, không cần chính xác đâu)
+  oleF: 1                              # Hệ số suy giảm theo tần số
   carrier_frequency_ghz: 3.5           # Tần số sóng mang trung tâm f_c = 3.5 GHz
   prbBW: 180.0                         # Khoảng cách của PRB = 180.0 kHz
   slot_duration_ms: 10.0               # Thời lượng 1 khe thời gian: Delta t = 10.0 ms = 0.01 s
