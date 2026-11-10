@@ -113,32 +113,38 @@ class Scenario:
 
         # 1. Quy mô hệ thống 
         self.B = int(sp.get("num_bs", 5))
-        self.K = int(sp["num_ue"])
+
+        self.num_embb_slices = int(sp["num_embb"])
+        self.num_urllc_slices = int(sp["num_urllc"])
+        self.num_ue_1embb = int(sp["num_ue_1embb"])
+        self.num_ue_1urllc = int(sp["num_ue_1urllc"])
+        self.num_slices = (self.num_embb_slices + self.num_urllc_slices)
+        self.num_ues_max = max(self.num_ue_1embb, self.num_ue_1urllc)
+        self.K = (self.num_embb_slices * self.num_ue_1embb + self.num_urllc_slices * self.num_ue_1urllc)
         self.M = int(sp["num_target"])
+        
 
-# Số PRB của MỖI BS
-        self.R = int(sp.get("num_prb_bs", 51))
+        self.slice_type = np.concatenate([np.zeros(self.num_embb_slices, dtype=np.int32),
+                          np.ones(self.num_urllc_slices, dtype=np.int32)])
+        self.embb_slice_idx = np.where(self.slice_type == 0)[0]
+        self.urllc_slice_idx = np.where(self.slice_type == 1)[0]
+        # Số PRB của MỖI BS
+        self.nPrb = list(sp.get("nPrb"))
+        self.max_prb = max(self.nPrb)
+        self.bw = list(sp.get("bwp"))
 
+        self.bw_bs_hz = float(sp.get("bandwidth_mhz_bs", 20.0))
 
-        self.bw_bs_hz = float(
-        sp.get("bandwidth_mhz_bs", 20.0)
-        ) * 1e6
-
-        self.prb_bw_hz = float(
-    sp.get("prb_bandwidth_khz", 360)
-) * 1e3
+        self.prb_bw_hz = float(sp.get("prbBW", 180))
         # 2. Cấu hình vô tuyến và OFDM 5G NR
-        self.bw_hz     = self.bw_bs_hz
-        self.fc_hz     = float(sp.get("carrier_frequency_ghz", 3.5)) * 1e9
-        self.prb_bw_hz = float(sp.get("prb_bandwidth_khz", 360.0)) * 1e3
+        self.bw_hz     = [self.prb_bw_hz * 2**w for w in self.bw]
+        self.fc_hz     = float(sp.get("carrier_frequency_ghz", 3.5))
         self.dt        = float(sp.get("slot_duration_ms", 10.0)) * 1e-3
         self.lambda_m  = SPEED_OF_LIGHT_M_S / self.fc_hz
 
-        # Công suất phát tối đa của mỗi BS (Watt)
-        if "max_tx_power_watt" in sp:
-            self.p_max_w = float(sp["max_tx_power_watt"])
-        else:
-            self.p_max_w = 10.0 ** (float(sp.get("max_tx_power_dbm", 35.0)) / 10.0) * 1e-3
+        # Công suất mỗi PRB của BWP của mỗi BS (mW)
+        self.pEachBWP = list(sp["pEach"])
+        self.p_max_w = self.p_max_w = float(np.dot(self.pEachBWP, self.nPrb))
 
         # Công suất tạp âm nhiệt trên 1 PRB: sigma^2 = N_0 * NF * B_PRB 
         if "noise_power_per_prb_watt" in sp:
@@ -234,7 +240,6 @@ class Scenario:
             self.a_max     = float(norm_cfg.get("a_max", self.a_max))
             self.u_pos_max = float(norm_cfg.get("u_pos_max", self.u_pos_max))
             self.u_vel_max = float(norm_cfg.get("u_vel_max", self.u_vel_max))
-            self.p_max_w   = float(norm_cfg.get("p_max_watt", self.p_max_w))
             self.d_max     = float(norm_cfg.get("diagonal_max_m", self.d_max))
 
         # 4. Mô hình động học CV (Constant Velocity) cho EKF
@@ -255,7 +260,8 @@ class Scenario:
         ])
 
         # Bảng tra khoảng cách PRB cho nhiễu C2S leakage 
-        r_idx = np.arange(self.R)
+        r_idx = np.arange(self.max_prb)
+
         dist_rr = np.abs(r_idx[:, None] - r_idx[None, :])
         self.c2s_lookup = self.eta0_c2s * np.exp(-self.alpha_c2s * dist_rr)
 
@@ -267,13 +273,16 @@ class Scenario:
         # 6. Kênh truyền thông:
         # channel_comm: ma trận hệ số fading nhanh h^c_{b,k,r} ~ CN(0, 1)
         # channel_gain_comm: độ lợi kênh hiệu dụng G^c_{b,k,r}(t) 
-        self.channel_comm      = np.zeros((self.B, self.K, self.R), dtype=complex)
-        self.channel_gain_comm = np.zeros((self.B, self.K, self.R), dtype=np.float64)
+        self.channel_comm = np.zeros((self.B, len(self.nPrb), self.num_slices, 
+                                      self.num_ues_max, self.max_prb), dtype=np.complex64)
+        self.channel_gain_comm = np.zeros((self.B, len(self.nPrb), self.num_slices, self.num_ues_max,
+                                        self.max_prb), dtype=np.float32)
+        self.sinr_comm = np.zeros((self.B, len(self.nPrb), self.num_slices, self.num_ues_max,
+                                    self.max_prb), dtype=np.float32)
         self._update_channel_comm()
 
         # Bộ đệm kết quả slot hiện tại
-        self.sinr_comm    = np.zeros((self.B, self.K, self.R), dtype=np.float64)
-        self.sinr_sensing = np.zeros((self.B, self.M, self.R), dtype=np.float64)
+        self.sinr_sensing = np.zeros((self.B, len(self.nPrb), self.M, self.max_prb), dtype=np.float32)
         self.prob_detect  = np.zeros((self.B, self.M), dtype=np.float64)
         self.prob_success = np.zeros(self.M, dtype=np.float64)
         self.current_slot = 0
@@ -314,27 +323,31 @@ class Scenario:
             ))
         return bs_list
 
-    def _init_ues(self) -> List[UserEquipment]:
+    def _init_ues(self):
         """
-        Khởi tạo K UE ngẫu nhiên trong vùng mô phỏng.
-        Đảm bảo khoảng cách tối thiểu tới các trạm BS >= min_distance_to_bs_m (10m).
+        Returns
+        list[list[UserEquipment]] [S][U] 
         """
-        ue_list = []
+        ue_matrix = []
         bs_pos_2d = np.array([bs.position[:2] for bs in self.base_stations])
+        ue_id = 0
+        for s in range(self.num_slices):
+            num_ue_per_slice = (self.num_ue_1embb if self.slice_type[s] == 0 else self.num_ue_1urllc)
+            service_type = ("embb" if self.slice_type[s] == 0 else "urllc")
+            slice_users = []
+            for u in range(num_ue_per_slice):
+                for _ in range(500):
+                    x = self.rng.uniform(0.0, self.area_x)
+                    y = self.rng.uniform(0.0, self.area_y)
+                    dists = np.linalg.norm(bs_pos_2d - np.array([x, y]), axis=1)
+                    if np.all(dists >= self.ue_min_dist_bs):
+                        break
+                slice_users.append(UserEquipment(ue_id=ue_id, slice_id=s, service_type=service_type,
+                        position=np.array([x, y, self.ue_h], dtype=np.float64)))
+                ue_id += 1
+            ue_matrix.append(slice_users)
 
-        for k in range(self.K):
-            for _ in range(500):
-                x_k = self.rng.uniform(0.0, self.area_x)
-                y_k = self.rng.uniform(0.0, self.area_y)
-                dists = np.linalg.norm(bs_pos_2d - np.array([x_k, y_k]), axis=1)
-                if np.all(dists >= self.ue_min_dist_bs):
-                    break
-            z_k = self.ue_h
-            ue_list.append(UserEquipment(
-                ue_id=k,
-                position=np.array([x_k, y_k, z_k], dtype=np.float64)
-            ))
-        return ue_list
+        return ue_matrix
 
     def _init_targets(self) -> List[SensingTarget]:
         """
@@ -364,35 +377,37 @@ class Scenario:
     # =========================================================================
     # Kênh truyền thông & Kênh Radar
     # =========================================================================
-    def _update_channel_comm(self) -> None:
-        for b_idx, bs in enumerate(self.base_stations):
-            for k_idx, ue in enumerate(self.ues):
-                d_m = max(float(np.linalg.norm(bs.position - ue.position)), self.ue_min_dist_bs)
-                d_km = d_m / 1000.0
-
-                # 1. 3GPP Macro Path Loss 
-                pl_db = self.pl_const_db + self.pl_exp_comm * np.log10(d_km)
-                g_path = 10.0 ** (-pl_db / 10.0)
-
-                # 2. Log-normal Shadowing 
-                if self.shadowing_std_db > 0:
-                    chi_db = self.rng.normal(0.0, self.shadowing_std_db)
-                    sh_lin = 10.0 ** (chi_db / 10.0)
-                else:
-                    sh_lin = 1.0
-
-                # 3. Small-scale Rayleigh fading per PRB: CN(0, 1) 
-                std_norm = 1.0 / np.sqrt(2.0)
-                h_r = self.rng.normal(0.0, std_norm, size=self.R)
-                h_i = self.rng.normal(0.0, std_norm, size=self.R)
-                h_c = h_r + 1j * h_i
-                self.channel_comm[b_idx, k_idx, :] = h_c
-
-                # 4. Effective Channel Gain G^c_{b,k,r} 
-                h2 = np.abs(h_c) ** 2
-                self.channel_gain_comm[b_idx, k_idx, :] = (
-                    g_path * h2 * self.g_max_lin * self.ue_ant_gain_lin * sh_lin
-                )
+    def _update_channel_comm(self):
+        """
+        channel_comm: [B,W,S,U,Rmax]
+        channel_gain_comm: [B,W,S,U,Rmax]
+        """
+        self.channel_comm.fill(0.0)
+        self.channel_gain_comm.fill(0.0)
+        for b, bs in enumerate(self.base_stations):
+            for s in range(self.num_slices):
+                num_ue = (self.num_ue_1embb if self.slice_type[s] == 0 else self.num_ue_1urllc)
+                for u in range(num_ue):
+                    ue = self.ues[s][u]
+                    d_m = max(
+                        np.linalg.norm(bs.position - ue.position),
+                        self.ue_min_dist_bs
+                    )
+                    d_km = d_m / 1000.0
+                    pl_db = (self.pl_const_db + self.pl_exp_comm * np.log10(d_km))
+                    g_path = 10.0 ** (-pl_db / 10.0)
+                    if self.shadowing_std_db > 0:
+                        chi_db = self.rng.normal(0.0, self.shadowing_std_db)
+                        sh_lin = 10.0 ** (chi_db / 10.0)
+                    else:
+                        sh_lin = 1.0
+                    for w, n_prb in enumerate(self.nPrb):
+                        h = (self.rng.standard_normal(n_prb) + 1j * self.rng.standard_normal(n_prb)
+                            ) / np.sqrt(2.0)
+                        self.channel_comm[b, w, s, u, :n_prb] = h
+                        h2 = np.abs(h) ** 2
+                        self.channel_gain_comm[b, w, s, u, :n_prb] = (g_path * sh_lin * h2
+                            * self.g_max_lin * self.ue_ant_gain_lin)
 
     def compute_beamforming_gain(
         self,
@@ -418,125 +433,6 @@ class Scenario:
         cos_psi = np.clip(np.dot(u_beam, u_true), -1.0, 1.0)
         gain = self.g_max_lin * (np.abs(cos_psi) ** self.beam_pattern_q)
         return float(gain)
-
-    def _compute_sensing_gain(
-        self,
-        b_idx: int,
-        m_idx: int,
-        pred_pos: Optional[np.ndarray] = None
-    ) -> float:
-        """
-        Tính gain kênh cảm biến radar 2 chiều G^s_{b,m}(t) :
-        G^s_{b,m} = G^{beam,s}_{b,m} * G_rx * sigma_rcs * (lambda / (4*pi))^2 / d_{b,m}^(2 * alpha_s)
-        """
-        bs  = self.base_stations[b_idx]
-        tgt = self.targets[m_idx]
-        d_bm = max(float(np.linalg.norm(bs.position - tgt.position)), 1.0)
-
-        # Beamforming gain có tính đến góc lệch sai số EKF
-        g_beam = self.compute_beamforming_gain(bs.position, tgt.position, pred_pos)
-
-        return float(
-            g_beam
-            * self.ant_gain_rx_lin
-            * tgt.rcs
-            * (self.lambda_m / (4.0 * np.pi)) ** 2
-            / (d_bm ** (2.0 * self.pl_exp_sensing))
-        )
-
-    # =========================================================================
-    # Tính SINR truyền thông & SINR cảm biến 
-    # =========================================================================
-    def compute_sinr_comm(
-        self,
-        power_alloc: np.ndarray,                            # shape: (B, R) — Watt
-        alloc_matrix: np.ndarray,                           # shape: (B, R) — 0: idle, 1..M: target, M+1..M+K: UE
-        pred_target_positions: Optional[np.ndarray] = None  # shape: (M, 3)
-    ) -> np.ndarray:
-      
-        B, K, R = self.B, self.K, self.R
-        sinr_comm = np.zeros((B, K, R), dtype=np.float64)
-
-        comm_mask = (alloc_matrix > self.M)
-
-       
-
-        # Tính SINR comm cho từng BS b và UE k
-        for b_idx in range(B):
-            for k_idx in range(K):
-                g_c_bkr = self.channel_gain_comm[b_idx, k_idx, :]
-                signal = power_alloc[b_idx] * g_c_bkr
-
-                # Nhiễu liên trạm IBI từ các BS khác phát comm lên cùng PRB r 
-                I_ibi_k = np.zeros(R, dtype=np.float64)
-                for b_other in range(B):
-                    if b_other == b_idx:
-                        continue
-                    p_comm_other = np.where(comm_mask[b_other], power_alloc[b_other], 0.0)
-                    g_c_other    = self.channel_gain_comm[b_other, k_idx, :]
-                    I_ibi_k     += self.eta_ibi * p_comm_other * g_c_other
-
-                denom = self.sigma2_w + I_ibi_k
-                ue_assigned = (alloc_matrix[b_idx] == (self.M + k_idx + 1))
-                sinr_comm[b_idx, k_idx, :] = np.where(
-                    ue_assigned & (denom > 0),
-                    signal / denom,
-                    0.0
-                )
-
-        self.sinr_comm = sinr_comm
-        return sinr_comm
-
-    def compute_sinr_sensing(
-        self,
-        power_alloc: np.ndarray,                            # shape: (B, R) — Watt
-        alloc_matrix: np.ndarray,                           # shape: (B, R) — 0: idle, 1..M: target, M+1..M+K: UE
-        pred_target_positions: Optional[np.ndarray] = None  # shape: (M, 3)
-    ) -> np.ndarray:
-       
-        B, M, R = self.B, self.M, self.R
-        sinr_sensing = np.zeros((B, M, R), dtype=np.float64)
-
-        comm_mask = (alloc_matrix > self.M)
-
-        for b_idx in range(B):
-            # Rò rỉ C2S: từ các PRB comm sang PRB sensing của cùng BS b 
-            p_comm_b = np.where(comm_mask[b_idx], power_alloc[b_idx], 0.0)
-            I_c2s_s_b = self.c2s_lookup.T @ p_comm_b  # shape: (R,)
-
-            for m_idx in range(M):
-                pred_pos_m = pred_target_positions[m_idx] if pred_target_positions is not None else None
-                G_s_bm = self._compute_sensing_gain(b_idx, m_idx, pred_pos=pred_pos_m)
-                signal_s = power_alloc[b_idx] * G_s_bm
-
-                # Nhiễu IBI liên trạm từ các BS khác phát trên cùng PRB r 
-                I_ibi_m = np.zeros(R, dtype=np.float64)
-                for b_other in range(B):
-                    if b_other == b_idx:
-                        continue
-                    p_other_r = power_alloc[b_other]
-                    G_other_m = self._compute_sensing_gain(b_other, m_idx, pred_pos=pred_pos_m)
-                    I_ibi_m  += self.eta_ibi * p_other_r * G_other_m
-
-                denom_s = self.sigma2_w + I_c2s_s_b + I_ibi_m
-                tgt_assigned = (alloc_matrix[b_idx] == (m_idx + 1))
-                sinr_sensing[b_idx, m_idx, :] = np.where(
-                    tgt_assigned & (denom_s > 0),
-                    signal_s / denom_s,
-                    0.0
-                )
-
-        self.sinr_sensing = sinr_sensing
-        return sinr_sensing
-
-    def compute_aggregate_sensing_sinr(self, sinr_sensing: Optional[np.ndarray] = None) -> np.ndarray:
-        """
-        Tính SINR cảm biến tổng hợp trên tất cả PRB được gán):
-        Gamma^s_{b,m}(t) = sum_{r in R} gamma^s_{b,m,r}(t)
-        """
-        if sinr_sensing is None:
-            sinr_sensing = self.sinr_sensing
-        return sinr_sensing.sum(axis=2)  # shape: (B, M)
 
     def compute_prob_detection(
         self,
@@ -566,7 +462,7 @@ class Scenario:
         if prob_detect is None:
             prob_detect = self.prob_detect
 
-        prob_miss_all = np.prod(1.0 - prob_detect, axis=0)  # shape: (M,)
+        prob_miss_all = np.prod(1.0 - prob_detect, axis=0)  
         self.prob_success = np.clip(1.0 - prob_miss_all, 0.0, 1.0)
         return self.prob_success
 
@@ -599,28 +495,21 @@ class Scenario:
 
         return aoi_new
 
-    def compute_comm_rate(
-        self,
-        sinr_comm: Optional[np.ndarray] = None,
-        alloc_matrix: Optional[np.ndarray] = None
-    ) -> np.ndarray:
+    def compute_comm_rate(self, sinr_comm: np.ndarray, X_c: np.ndarray) -> np.ndarray:
         """
-        Tính tốc độ truyền thông R_k(t) cho từng UE k (bps) theo Shannon:
-        R_k(t) = sum_{b, r: d_{b,r}=M+k+1} B_PRB * log2(1 + gamma^c_{b,k,r}(t))
+        Compute communication throughput.
+        Parameters
+            sinr_comm : (np.ndarray, [B,W,S,U_max,R_max])
+            X_c : (np.ndarray, [B,W,S,U_max,R_max])
+        Returns
+            rate_bps : (np.ndarray, [S,U_max])      
         """
-        if sinr_comm is None:
-            sinr_comm = self.sinr_comm
-
-        capacity_prb = self.prb_bw_hz * np.log2(1.0 + np.clip(sinr_comm, 0.0, None))
-        rate_bps = np.zeros(self.K, dtype=np.float64)
-
-        for k_idx in range(self.K):
-            if alloc_matrix is not None:
-                mask = (alloc_matrix == (self.M + k_idx + 1))
-                rate_bps[k_idx] = np.sum(capacity_prb[:, k_idx, :] * mask)
-            else:
-                rate_bps[k_idx] = np.sum(capacity_prb[:, k_idx, :])
-
+        rate_bps = np.zeros((self.num_slices, self.num_ues_max), dtype=np.float32)
+        for w, n_prb in enumerate(self.nPrb):
+            bw_prb = self.bw_hz[w]
+            se = np.log2(1.0 + np.maximum(sinr_comm[:, w, :, :, :n_prb], 0.0))
+            rate_bps += np.sum( X_c[:, w, :, :, :n_prb] * bw_prb * se, axis=(0, 3))
+        rate_bps *= self.get_ue_mask()
         return rate_bps
 
     # =========================================================================
@@ -697,22 +586,23 @@ class Scenario:
     # =========================================================================
     def compute_state_vector(
         self,
-        u_pos: np.ndarray,                             # shape: (M,)
-        u_vel: np.ndarray,                             # shape: (M,)
-        pred_target_positions: np.ndarray,             # shape: (M, 3)
-        power_alloc: np.ndarray,                       # shape: (B, R)
-        alloc_matrix: np.ndarray,                      # shape: (B, R)
+        u_pos: np.ndarray,                             
+        u_vel: np.ndarray,                             
+        pred_target_positions: np.ndarray,            
+        power_alloc: np.ndarray,                      
+        alloc_matrix: np.ndarray,                      
         u_pos_max: Optional[float] = None,
         u_vel_max: Optional[float] = None,
         a_max: Optional[float] = None,
-        p_max: Optional[float] = None
     ) -> np.ndarray:
         
-        M, B, K, R = self.M, self.B, self.K, self.R
+        M = self.M
+        B = self.B
+        S = self.num_slices
+        U = self.num_ues_max
         u_pos_max = u_pos_max or self.u_pos_max
         u_vel_max = u_vel_max or self.u_vel_max
         a_max = a_max or self.a_max
-        p_max = p_max or self.p_max_w
 
         # 1. Tỉ lệ về độ bất định vị trí & vận tốc: U~_m^pos, U~_m^vel in [0, 1]
         u_pos_norm = np.clip(u_pos / u_pos_max, 0.0, 1.0)
@@ -729,28 +619,33 @@ class Scenario:
         d_pred_norm = np.clip(d_pred / self.d_max, 0.0, 1.0).flatten()  # (25,)
 
         # 4. Hiệu suất phổ H~_{b,k}^avg(t) = log2(1 + SINR_bar_{b,k})
-        h_avg_comm = np.zeros((B, K), dtype=np.float64)
+        h_avg_comm = np.zeros((B, S, U), dtype=np.float32)
         for b in range(B):
-            for k in range(K):
-                mask_bk = (alloc_matrix[b] == (M + k + 1))
-                if np.any(mask_bk):
-                    sinr_mean = np.mean(self.sinr_comm[b, k, mask_bk])
-                else:
-                    sinr_mean = 0.0
-                h_avg_comm[b, k] = np.log2(1.0 + sinr_mean)
-        h_avg_comm_flat = h_avg_comm.flatten()  # (25,)
+            for s in range(S):
+                num_ue = (self.num_ue_1embb if self.slice_type[s] == 0 else self.num_ue_1urllc)
+                for u in range(num_ue):
+                    sinr_bsu = self.sinr_comm[b, :, s, u, :]
+                    valid = sinr_bsu > 0
+                    if np.any(valid):
+                        sinr_mean = np.mean(sinr_bsu[valid])
+                    else:
+                        sinr_mean = 0.0
+                    h_avg_comm[b, s, u] = np.log2(1.0 + sinr_mean)
+        h_avg_comm_flat = h_avg_comm.flatten()
 
         # 5. Hiệu suất phổ cảm biến H~_{b,m}^avg(t) = log2(1 + SINR_bar_{b,m}) 
         h_avg_sens = np.zeros((B, M), dtype=np.float64)
         for b in range(B):
             for m in range(M):
+                sinr_mean = 0.0
                 mask_bm = (alloc_matrix[b] == (m + 1))
                 if np.any(mask_bm):
-                    sinr_mean = np.mean(self.sinr_sensing[b, m, mask_bm])
-                else:
-                    sinr_mean = 0.0
+                    sinr_bm = self.sinr_sensing[b, :, m, :]
+                    valid = sinr_bm > 0
+                    if np.any(valid):
+                        sinr_mean = np.mean(sinr_bm[valid])
                 h_avg_sens[b, m] = np.log2(1.0 + sinr_mean)
-        h_avg_sens_flat = h_avg_sens.flatten()  # (25,)
+        h_avg_sens_flat = h_avg_sens.flatten()  
 
         # 6. Tỉ lệ công suất còn lại: P~_b^res(t) = P_b^res / P_b^max
         p_used_b = np.sum(power_alloc, axis=1)  # (B,)
@@ -758,19 +653,19 @@ class Scenario:
 
         # 7. Tỉ lệ PRB còn lại: N~_b^res(t) = N_b^res / N_PRB
         n_used_b = np.sum(alloc_matrix != 0, axis=1)  # (B,)
-        n_res_b = np.clip((R - n_used_b) / float(R), 0.0, 1.0)  # (5,)
+        total_prb = np.sum(self.nPrb)
+        n_res_b = np.clip((total_prb - n_used_b) / float(total_prb), 0.0, 1.0)
 
-        # Ghép thành vector S_t 100 chiều
         s_t = np.concatenate([
-            u_pos_norm,        # 5
-            u_vel_norm,        # 5
-            aoi_norm,          # 5
-            d_pred_norm,       # 25
-            h_avg_comm_flat,   # 25
-            h_avg_sens_flat,   # 25
-            p_res_b,           # 5
-            n_res_b            # 5
-        ])
+            u_pos_norm.flatten(),
+            u_vel_norm.flatten(),
+            aoi_norm.flatten(),
+            d_pred_norm,
+            h_avg_comm_flat,
+            h_avg_sens_flat,
+            p_res_b.flatten(),
+            n_res_b.flatten()
+        ]).astype(np.float32)
         return s_t
 
     # =========================================================================
@@ -778,11 +673,11 @@ class Scenario:
     # =========================================================================
     def compute_reward(
         self,
-        rate_bps: np.ndarray,             # shape: (K,)
+        rate_bps: np.ndarray,             # shape: (S,U_max)
         prob_success: np.ndarray,         # shape: (M,)
         u_pos: np.ndarray,                # shape: (M,)
         u_vel: np.ndarray,                # shape: (M,)
-        power_alloc: np.ndarray,          # shape: (B, R)
+        power_alloc: np.ndarray,          
         alpha: Optional[float] = None,
         beta: Optional[float] = None,
         gamma: Optional[float] = None,
@@ -867,33 +762,22 @@ class Scenario:
     # Step & Reset Interface cho Environment
     # =========================================================================
     def step(
-        self,
-        power_alloc: np.ndarray,                            # shape: (B, R) — Watt
-        alloc_matrix: np.ndarray,                           # shape: (B, R) — 0: idle, 1..M: target, M+1..M+K: UE
-        pred_target_positions: Optional[np.ndarray] = None, # shape: (M, 3) vị trí dự đoán từ EKF
-        prob_false_alarm: Optional[float] = None,
-        min_success_prob: Optional[float] = None
-    ) -> Dict:
+        self, rate_bps: np.ndarray,  sinr_sensing: np.ndarray,
+        sinr_sensing_agg: np.ndarray, prob_false_alarm=None,
+        min_success_prob=None) -> Dict:
         """
         Thực hiện một time slot đầy đủ của kịch bản ISAC.
         """
-        
+        self.sinr_comm.fill(0.0)
+        self.sinr_sensing.fill(0.0)
+        self.prob_detect.fill(0.0)
+        self.prob_success.fill(0.0)
         # Cập nhật kênh truyền thông hiệu dụng với 3GPP Macro & Log-normal Shadowing
         self._update_channel_comm()
-
-        # Tính SINR cảm biến radar với góc lệch búp sóng EKF 
-        sinr_sensing = self.compute_sinr_sensing(power_alloc, alloc_matrix, pred_target_positions)
-        sinr_sensing_agg = self.compute_aggregate_sensing_sinr(sinr_sensing)
 
         # Xác suất phát hiện và xác suất sensing thành công 
         prob_detect  = self.compute_prob_detection(sinr_sensing_agg, prob_false_alarm)
         prob_success = self.compute_prob_success(prob_detect)
-
-        # Tốc độ truyền thông UE (bps)
-        rate_bps = self.compute_comm_rate(
-        sinr_comm=self.sinr_comm,
-        alloc_matrix=alloc_matrix
-        )
 
         # Cập nhật Age of Information 
         aoi_new = self.update_aoi(prob_success, min_success_prob, reset_value=0)
@@ -926,6 +810,10 @@ class Scenario:
         self.targets      = self._init_targets()
         self._update_channel_comm()
         self.current_slot = 0
+        self.sinr_comm.fill(0.0)
+        self.sinr_sensing.fill(0.0)
+        self.prob_detect.fill(0.0)
+        self.prob_success.fill(0.0)
 
         return {
             "slot"          : 0,
@@ -942,7 +830,19 @@ class Scenario:
         return np.stack([bs.position for bs in self.base_stations])
 
     def get_ue_positions(self) -> np.ndarray:
-        return np.stack([ue.position for ue in self.ues])
+        ue_pos = np.zeros((self.num_slices, self.num_ues_max, 3), dtype=np.float32)
+        for s, users in enumerate(self.ues):
+            for u, ue in enumerate(users):
+                ue_pos[s, u] = ue.position
+
+        return ue_pos
+    
+    def get_ue_mask(self):
+        ue_mask = np.zeros((self.num_slices, self.num_ues_max), dtype=np.float32)
+        for s, users in enumerate(self.ues):
+            ue_mask[s, :len(users)] = 1.0
+
+        return ue_mask
 
     def get_target_states(self) -> np.ndarray:
         return np.stack([tgt.state for tgt in self.targets])
@@ -959,12 +859,24 @@ class Scenario:
         return np.linalg.norm(bs_pos[:, None, :] - tgt_pos[None, :, :], axis=2)
 
     def get_distance_bs_ue(self) -> np.ndarray:
+        """
+        Returns
+        distance : (np.ndarray, [B,S,U_max])   
+        """
         bs_pos = self.get_bs_positions()
         ue_pos = self.get_ue_positions()
-        return np.linalg.norm(bs_pos[:, None, :] - ue_pos[None, :, :], axis=2)
+        distance = np.linalg.norm(bs_pos[:, None, None, :] - ue_pos[None, :, :, :], axis=-1)
+
+        return distance.astype(np.float32)
 
     def __repr__(self) -> str:
         return (
-            f"Scenario(B={self.B}, K={self.K}, M={self.M}, R={self.R}, "
-            f"slot={self.current_slot}, area=[{self.area_x:.0f}x{self.area_y:.0f}x{self.area_z:.0f}]m)"
+            f"Scenario("
+            f"B={self.B}, "
+            f"S={self.num_slices}, "
+            f"K={self.K}, "
+            f"M={self.M}, "
+            f"W={len(self.nPrb)}, "
+            f"Rmax={self.max_prb}, "
+            f"slot={self.current_slot})"
         )
