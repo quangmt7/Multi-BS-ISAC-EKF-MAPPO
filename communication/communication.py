@@ -16,11 +16,11 @@ class CommunicationManager:
         sys_config = config.get("system_parameters", config)
         req_config = sys_config["requirements"] 
 
-        self.pEach = list(sys_config["pEach"])
+        self.pEach = np.asarray(sys_config["pEach"], dtype=float) * 1e-3  # mW -> W
         self.prbBW = sys_config["prbBW"]
         self.bwp = sys_config["bwp"]
-        self.bwp_bandwidth = [self.prbBW * 2**w for w in self.bwp]
-        self.slot_duration = sys_config["slot_duration_ms"]
+        self.bwp_bandwidth = [self.prbBW * 1e3 * 2**w for w in self.bwp]  # Hz
+        self.slot_duration = sys_config["slot_duration_ms"] / 1000.0
 
         self.R_min = req_config["min_ue_rate_mbps"]
         self.D_max = req_config["max_ue_delay"]
@@ -99,7 +99,8 @@ class CommunicationManager:
             all_satisfied : (bool) True if all QoS requirements are met.
             metrics : (dict) QoS statistics.
         """
-        embb_gap = np.maximum(0.0, self.R_min - embb_rate)
+        embb_rate_mbps = np.asarray(embb_rate) / 1e6
+        embb_gap = np.maximum(0.0, self.R_min - embb_rate_mbps)
 
         embb_penalty = (np.sum(embb_gap))
         urllc_gap = np.maximum(0.0, urllc_latency - self.D_max)
@@ -108,7 +109,7 @@ class CommunicationManager:
 
         qos_penalty = (embb_penalty + urllc_penalty)
 
-        embb_satisfied = (embb_rate >= self.R_min)
+        embb_satisfied = (embb_rate_mbps >= self.R_min)
 
         urllc_satisfied = (urllc_latency <= self.D_max)
 
@@ -120,7 +121,7 @@ class CommunicationManager:
             "urllc_penalty": float(urllc_penalty),
             "embb_satisfaction": float(np.mean(embb_satisfied)),
             "urllc_satisfaction": float(np.mean(urllc_satisfied)),
-            "mean_embb_rate_mbps": float(np.mean(embb_rate)),
+            "mean_embb_rate_mbps": float(np.mean(embb_rate_mbps)),
             "mean_urllc_latency_ms": float(np.mean(urllc_latency)),
         }
         return (qos_penalty, all_satisfied, metrics)

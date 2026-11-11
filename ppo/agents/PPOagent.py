@@ -42,9 +42,10 @@ class MAPPOAgent:
         self.config = config
         # get system parameters
         sys_config= config.get("system_parameters")
-        self.n_prb= sys_config["num_prb_bs"]
+        self.n_prb = sum(sys_config["nPrb"])
         self.num_targets= sys_config["num_target"]
-        self.num_ues= sys_config["num_ue"]
+        self.num_ues = (sys_config["num_embb"] * sys_config["num_ue_1embb"]
+                        + sys_config["num_urllc"] * sys_config["num_ue_1urllc"])
         self.num_bs = sys_config["num_bs"]
         # get mappo parameter
         mappo_config= config.get("mappo_parameters")

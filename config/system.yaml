@@ -18,7 +18,10 @@ system_parameters:
   bandwidth_mhz_bs: 20.0                 # Băng thông mỗi BS: 20.0 MHz
   bwp: [1,2]                           # BWP được dùng
   nPrb: [51,51]                        # Số PRB mỗi BWP
-  pEach: [5,5]                         # Công suất mỗi PRB của BWP
+  pEach: [5,5]                         # Công suất cố định mỗi PRB (mW); PHY đổi sang W
+  cost_switch: 0.3                    # Kế thừa ORAN-Pro-eMbb-URLLC/config/cons.json
+  cost_gb: 2                          # Hệ số eta trong ceil(eta * |mu_w - mu_w'|), cùng nguồn BWP
+  urllc_packet_size_bits: null         # BẮT BUỘC nhóm chốt trước khi chạy; không có mặc định
   fStart: [0, 10]                      # Tần số trung tâm tại PRB đầu tiên (kHz) (tham chiếu thôi nhé, không cần chính xác đâu)
   oleF: 1                              # Hệ số suy giảm theo tần số
   carrier_frequency_ghz: 3.5           # Tần số sóng mang trung tâm f_c = 3.5 GHz

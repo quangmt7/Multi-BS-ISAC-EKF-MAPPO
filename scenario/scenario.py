@@ -133,18 +133,18 @@ class Scenario:
         self.max_prb = max(self.nPrb)
         self.bw = list(sp.get("bwp"))
 
-        self.bw_bs_hz = float(sp.get("bandwidth_mhz_bs", 20.0))
+        self.bw_bs_hz = float(sp.get("bandwidth_mhz_bs", 20.0)) * 1e6
 
-        self.prb_bw_hz = float(sp.get("prbBW", 180))
+        self.prb_bw_hz = float(sp.get("prbBW", 180)) * 1e3
         # 2. Cấu hình vô tuyến và OFDM 5G NR
         self.bw_hz     = [self.prb_bw_hz * 2**w for w in self.bw]
-        self.fc_hz     = float(sp.get("carrier_frequency_ghz", 3.5))
+        self.fc_hz     = float(sp.get("carrier_frequency_ghz", 3.5)) * 1e9
         self.dt        = float(sp.get("slot_duration_ms", 10.0)) * 1e-3
         self.lambda_m  = SPEED_OF_LIGHT_M_S / self.fc_hz
 
-        # Công suất mỗi PRB của BWP của mỗi BS (mW)
-        self.pEachBWP = list(sp["pEach"])
-        self.p_max_w = self.p_max_w = float(np.dot(self.pEachBWP, self.nPrb))
+        # Config pEach uses mW; internal physical calculations use W.
+        self.pEachBWP = np.asarray(sp["pEach"], dtype=float) * 1e-3
+        self.p_max_w = float(np.dot(self.pEachBWP, self.nPrb))
 
         # Công suất tạp âm nhiệt trên 1 PRB: sigma^2 = N_0 * NF * B_PRB 
         if "noise_power_per_prb_watt" in sp:

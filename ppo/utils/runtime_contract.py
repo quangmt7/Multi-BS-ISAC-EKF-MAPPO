@@ -30,8 +30,10 @@ class RuntimeContract:
 
         system = config["system_parameters"]
         self.num_bs = int(system["num_bs"])
-        self.num_prb = int(system["num_prb_bs"])
-        self.max_destination = int(system["num_target"] + system["num_ue"])
+        self.num_prb = sum(system["nPrb"])  # flat policy order: BWP then PRB
+        num_ue = (system["num_embb"] * system["num_ue_1embb"]
+                  + system["num_urllc"] * system["num_ue_1urllc"])
+        self.max_destination = int(system["num_target"] + num_ue)
 
     def observation_dimensions(
         self, local_observations: Any, global_state: Any

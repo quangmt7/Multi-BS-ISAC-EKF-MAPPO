@@ -125,10 +125,41 @@ class ProjectConfig:
                 raise ValueError(f"Missing or invalid config section: {section}")
 
         system = self.data["system_parameters"]
-        for name in ("num_bs", "num_ue", "num_target", "num_prb_bs"):
+        for name in ("num_bs", "num_target", "num_embb", "num_urllc",
+                     "num_ue_1embb", "num_ue_1urllc"):
             value = system.get(name)
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
                 raise ValueError(f"system_parameters.{name} must be a positive integer")
+
+        bwp = system.get("bwp")
+        if not isinstance(bwp, list) or not bwp or any(
+            isinstance(mu, bool) or not isinstance(mu, int) or mu < 0 for mu in bwp
+        ):
+            raise ValueError("system_parameters.bwp must list non-negative numerologies")
+        for name in ("nPrb", "pEach", "fStart"):
+            values = system.get(name)
+            if not isinstance(values, list) or len(values) != len(bwp):
+                raise ValueError(f"system_parameters.{name} must have one entry per BWP")
+            for value in values:
+                if (isinstance(value, bool) or not isinstance(value, (int, float))
+                        or not np.isfinite(value)):
+                    raise ValueError(f"system_parameters.{name} must contain finite numbers")
+                if name == "nPrb" and (not isinstance(value, int) or value <= 0):
+                    raise ValueError("system_parameters.nPrb must contain positive integers")
+                if name == "pEach" and value <= 0:
+                    raise ValueError("system_parameters.pEach must contain positive powers (mW)")
+        for name in ("prbBW", "slot_duration_ms", "urllc_packet_size_bits"):
+            value = system.get(name)
+            if (isinstance(value, bool) or not isinstance(value, (int, float))
+                    or not np.isfinite(value) or value <= 0):
+                raise ValueError(f"system_parameters.{name} must be explicitly set and positive")
+        for name in ("cost_switch", "cost_gb"):
+            value = system.get(name)
+            if (isinstance(value, bool) or not isinstance(value, (int, float))
+                    or not np.isfinite(value) or value < 0):
+                raise ValueError(f"system_parameters.{name} must be finite and non-negative")
+        if not np.isclose(self.data["ekf_parameters"]["dt"], system["slot_duration_ms"] / 1000.):
+            raise ValueError("ekf_parameters.dt must match slot_duration_ms in seconds")
 
         mappo = self.data["mappo_parameters"]
         self._validate_interference(system, mappo)
@@ -240,12 +271,14 @@ class ProjectConfig:
             raise ValueError(
                 "Missing or invalid config section: mappo_parameters.action_space"
             )
-        expected_choices = 1 + system["num_target"] + system["num_ue"]
+        num_ue = (system["num_embb"] * system["num_ue_1embb"]
+                  + system["num_urllc"] * system["num_ue_1urllc"])
+        expected_choices = 1 + system["num_target"] + num_ue
         configured_choices = action_space.get("num_discrete_choices", expected_choices)
         if configured_choices != expected_choices:
             raise ValueError(
                 "mappo_parameters.action_space.num_discrete_choices must equal "
-                f"1 + num_target + num_ue = {expected_choices}"
+                f"1 + num_target + total slice UEs = {expected_choices}"
             )
         if action_space.get("power_action_type", "continuous") != "continuous":
             raise ValueError(

@@ -1,5 +1,6 @@
 """
 Tracking Benchmark Module for ISAC System:
+Legacy flat-allocation runner: the multi-BWP benchmark migration is pending.
 Comparing 3 Curves over Time Slots:
 1. Joint Cooperative EKF (Centralized Multi-BS Fusion)
 2. Each-BS Local EKF (Decentralized Tracking per Base Station)
@@ -40,10 +41,11 @@ class TrackingBenchmarkRunner:
         scenario_config = sys_config["scenario"]
 
         self.num_bs = sys_config["num_bs"]
-        self.num_ues = sys_config["num_ue"]
+        self.num_ues = (sys_config["num_embb"] * sys_config["num_ue_1embb"]
+                        + sys_config["num_urllc"] * sys_config["num_ue_1urllc"])
         self.num_targets = sys_config["num_target"]
-        self.n_prb = sys_config["num_prb_bs"]
-        self.p_max = float(sys_config["max_tx_power_watt"])
+        self.n_prb = sum(sys_config["nPrb"])
+        self.p_max = float(np.dot(sys_config["nPrb"], sys_config["pEach"])) * 1e-3
         self.max_steps = sim_config["num_slots_per_episode"]
         
         lx = float(scenario_config["area_size_x_m"])
