@@ -10,11 +10,8 @@ class EKF:
         measurement_dim : number of measurement's demension
         num_target : number of target
         dt : time frame
-        process_noise : all noise matrix, include all noise for six components
-        initial_states : initial states for all target
+        process_noise : full state process-noise covariance [state_dim,state_dim]
         initial_covariances : initial covariances for all target
-        sepBS : (bool) indicates if this EKF is used in common or separate BS
-            True -> separate BS, False -> common 
     """
     def __init__(self, state_dim, measurement_dim, num_target, dt, process_noise, 
                  initial_covariances):
@@ -22,8 +19,11 @@ class EKF:
         self.measurement_dim = measurement_dim
         self.num_target = num_target
         self.dt = dt
-        self.con_noise_spec_dense = process_noise["continuous_noise_spectral_density"]
-        self.q_diag = np.diag(process_noise["q_diag"])
+        self.Q = np.array(process_noise, dtype=float, copy=True)
+        if (self.Q.shape != (state_dim, state_dim) or not np.isfinite(self.Q).all()
+                or not np.allclose(self.Q, self.Q.T, rtol=1e-10, atol=1e-15)
+                or np.linalg.eigvalsh(self.Q).min() < -1e-12):
+            raise ValueError("process_noise must be a finite symmetric positive-semidefinite state covariance")
         self.p_diag_init = np.diag(initial_covariances["p_diag_init"])
 
         # Initial state estimate for each target, also state storage
@@ -78,7 +78,7 @@ class EKF:
         state = self.state_list[target_id]
         covariance = self.covariance_list[target_id]
         predicted_state = self.F @ state
-        predicted_covariance = (self.F @ covariance @ self.F.T + self.q_diag)
+        predicted_covariance = (self.F @ covariance @ self.F.T + self.Q)
 
         self.state_list[target_id] = predicted_state
         self.covariance_list[target_id] = predicted_covariance

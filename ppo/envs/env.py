@@ -95,7 +95,7 @@ class BaseISACEnv(ABC):
         self.measurement_list = [BSMeasurement(b, ekf_config) for b in range(self.num_bs)]
         self.ekf_common = EKF(
             ekf_config["state_dim"], ekf_config["measurement_dim"], self.num_targets,
-            ekf_config["dt"], ekf_config["process_noise"], ekf_config["initial_covariance"])
+            ekf_config["dt"], self.scenario.get_process_noise_cov(), ekf_config["initial_covariance"])
         self.numBit = np.zeros((self.num_urllc, self.num_ue_1urllc), dtype=float)
         self.URLLC_Latency = np.zeros_like(self.numBit)
         self.eMBB_Thr = np.zeros((self.num_embb, self.num_ue_1embb), dtype=float)

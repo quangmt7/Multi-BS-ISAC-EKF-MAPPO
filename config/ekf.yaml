@@ -8,14 +8,10 @@ ekf_parameters:
   # 2. Ma trận hiệp phương sai nhiễu quá trình Q_m (Process Noise Covariance)
   #   - w_m(t) ~ N(0, Q_m)
   #   - q_s: cường độ nhiễu gia tốc liên tục = 0.4 m^2/s^3
-  #   - q_diag là covariance rời rạc được cấu hình độc lập với dt
+  #   - Scenario dựng Q đầy đủ theo q_s và dt, gồm tương quan vị trí–vận tốc
   # ----------------------------------------------------------------------------
   process_noise:
     continuous_noise_spectral_density: 0.4   # q_s: mật độ phổ nhiễu gia tốc (m^2/s^3)
-    q_pos: 1.333e-7                          # Thành phần nhiễu vị trí rời rạc (m^2)
-    q_vel: 4.0e-3                            # Thành phần nhiễu vận tốc rời rạc (m^2/s^2)
-    # Vector đường chéo mặc định cho ma trận Q_m (6x6)
-    q_diag: [1.333e-7, 1.333e-7, 1.333e-7, 4.0e-3, 4.0e-3, 4.0e-3]
 
   # ----------------------------------------------------------------------------
   # 3. Trạng thái và Ma trận hiệp phương sai ban đầu P_m(0|0) (Initial Covariance)

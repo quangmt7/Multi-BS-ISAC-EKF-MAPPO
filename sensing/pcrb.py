@@ -18,11 +18,12 @@ class PCRB:
         self.dt = dt
         self.sepBS = sepBS
 
-        # Match the process-noise configuration used by EKF.
-        self.con_noise_spec_dense = process_noise[
-            "continuous_noise_spectral_density"
-        ]
-        self.q_diag = np.diag(process_noise["q_diag"])
+        # Full covariance supplied by the scenario, including cross terms.
+        self.Q = np.array(process_noise, dtype=float, copy=True)
+        if (self.Q.shape != (state_dim, state_dim) or not np.isfinite(self.Q).all()
+                or not np.allclose(self.Q, self.Q.T, rtol=1e-10, atol=1e-15)
+                or np.linalg.eigvalsh(self.Q).min() < -1e-12):
+            raise ValueError("process_noise must be a finite symmetric positive-semidefinite state covariance")
 
         # Initial covariance for every target.
         self.p_diag_init = np.diag(
@@ -133,7 +134,7 @@ class PCRB:
 
         predicted_covariance = (
             self.F @ covariance @ self.F.T
-            + self.q_diag
+            + self.Q
         )
 
         predicted_covariance = self._symmetrize(

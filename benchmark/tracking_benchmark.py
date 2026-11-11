@@ -62,7 +62,7 @@ class TrackingBenchmarkRunner:
         self.se_sens_scale = float(np.log2(1.0 + sys_config["sinr"]["gamma_s_min_linear"]))
 
         # Instantiate physical modules
-        self.scenario = Scenario(self.config)
+        self.scenario = Scenario(self.config, cfg_ekf=self.ekf_cfg)
         self.channel = WirelessChannel(self.config)
         p_fa = float(sys_config["requirements"]["max_prob_false_alarm"])
         self.detection_list = [Detection(p_fa) for _ in range(self.num_bs)]
@@ -74,7 +74,7 @@ class TrackingBenchmarkRunner:
         self.ekf_joint = EKF(
             self.ekf_cfg["state_dim"], self.ekf_cfg["measurement_dim"],
             self.num_targets, self.ekf_cfg["dt"],
-            self.ekf_cfg["process_noise"], self.ekf_cfg["initial_covariance"], False
+            self.scenario.get_process_noise_cov(), self.ekf_cfg["initial_covariance"]
         )
         
         # 2. Each-BS Local EKF (One independent instance per BS)
@@ -82,7 +82,7 @@ class TrackingBenchmarkRunner:
             EKF(
                 self.ekf_cfg["state_dim"], self.ekf_cfg["measurement_dim"],
                 self.num_targets, self.ekf_cfg["dt"],
-                self.ekf_cfg["process_noise"], self.ekf_cfg["initial_covariance"], True
+                self.scenario.get_process_noise_cov(), self.ekf_cfg["initial_covariance"]
             )
             for _ in range(self.num_bs)
         ]
@@ -91,7 +91,7 @@ class TrackingBenchmarkRunner:
         self.pcrb = PCRB(
             self.ekf_cfg["state_dim"], self.ekf_cfg["measurement_dim"],
             self.num_targets, self.ekf_cfg["dt"],
-            self.ekf_cfg["process_noise"], self.ekf_cfg["initial_covariance"], False
+            self.scenario.get_process_noise_cov(), self.ekf_cfg["initial_covariance"], False
         )
 
         # Load Trained Actor if checkpoint provided

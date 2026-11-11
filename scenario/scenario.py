@@ -361,7 +361,7 @@ class Scenario:
         distance = np.linalg.norm(bs_pos[:, None, None, :] - ue_pos[None, :, :, :], axis=-1)
 
         return distance.astype(np.float32)
-    
+
     def step_targets(self) -> None:
         """Advance targets once; reflect velocity at the simulation boundaries."""
         for tgt in self.targets:
@@ -376,6 +376,7 @@ class Scenario:
         self.current_slot += 1
 
     def get_process_noise_cov(self):
+        """Return an independent copy of the full discrete state covariance."""
         return self.Q_m.copy()
 
     def __repr__(self) -> str:
