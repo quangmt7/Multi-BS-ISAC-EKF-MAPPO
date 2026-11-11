@@ -25,7 +25,7 @@ system_parameters:
   oleF: 1                              # Hệ số suy giảm theo tần số
   carrier_frequency_ghz: 3.5           # Tần số sóng mang trung tâm f_c = 3.5 GHz
   prbBW: 180.0                         # Khoảng cách của PRB = 180.0 kHz
-  slot_duration_ms: 10.0               # Thời lượng 1 khe thời gian: Delta t = 10.0 ms = 0.01 s
+  slot_duration_ms: 1.0                # Bước mô phỏng: 1 ms = 0.001 s
 
   # ----------------------------------------------------------------------------
   # 3. Tạp âm nhiệt và đặc tính máy thu (Thermal Noise: B_0 * N_0)
@@ -109,7 +109,8 @@ system_parameters:
   # 8. Thời gian mô phỏng (Time Horizon)
   # ----------------------------------------------------------------------------
   simulation:
-    num_slots_per_episode: 100      # T = 100 khe thời gian liên tiếp (100 * 10 ms = 1.0 s)
+    num_slots_per_episode: 100         # 100 bước × 1 ms = 0.1 s
+    num_subframes_per_frame: 10        # Frame SAC: 10 bước × 1 ms = 10 ms
 
   # ----------------------------------------------------------------------------
   # 9. Ràng buộc chỉ tiêu hệ thống (Optimization Constraints)

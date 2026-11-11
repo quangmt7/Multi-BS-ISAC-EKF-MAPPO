@@ -160,6 +160,9 @@ class ProjectConfig:
                 raise ValueError(f"system_parameters.{name} must be finite and non-negative")
         if not np.isclose(self.data["ekf_parameters"]["dt"], system["slot_duration_ms"] / 1000.):
             raise ValueError("ekf_parameters.dt must match slot_duration_ms in seconds")
+        frame_steps = system.get("simulation", {}).get("num_subframes_per_frame")
+        if isinstance(frame_steps, bool) or not isinstance(frame_steps, int) or frame_steps <= 0:
+            raise ValueError("simulation.num_subframes_per_frame must be a positive integer")
 
         mappo = self.data["mappo_parameters"]
         for section, names in (

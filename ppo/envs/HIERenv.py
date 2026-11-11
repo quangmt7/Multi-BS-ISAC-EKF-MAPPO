@@ -9,16 +9,18 @@ class HierISACEnv(BaseISACEnv):
         self.last_frame_summary = None
         return result
 
-    def begin_frame(self, ratios, num_subframes):
+    def begin_frame(self, ratios, num_subframes=None):
         """Normalize SAC ratios per BS, floor PRB quotas; hold caps for this frame.
 
-        ratios: [B,W,S+M], slices before targets. The trainer supplies the
-        frame length explicitly; no assumed physical duration or extra reset.
+        ratios: [B,W,S+M], slices before targets. Frame length defaults to
+        simulation.num_subframes_per_frame; no episode or dynamics reset.
         """
         if not self._has_reset:
             raise RuntimeError("reset before begin_frame")
         if self._frame_steps is not None:
             raise RuntimeError("finish the active frame before replacing its quota")
+        if num_subframes is None:
+            num_subframes = self.config["system_parameters"]["simulation"]["num_subframes_per_frame"]
         if isinstance(num_subframes, bool) or not isinstance(num_subframes, (int, np.integer)) or num_subframes <= 0:
             raise ValueError("num_subframes must be a positive integer")
         ratios = np.asarray(ratios, dtype=float)

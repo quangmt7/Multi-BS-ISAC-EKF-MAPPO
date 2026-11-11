@@ -2,14 +2,13 @@ ekf_parameters:
   # 1. Mô hình động học mục tiêu (Target Kinematics — Constant Velocity)
   state_dim: 6                         # Kích thước vector trạng thái: [x, y, z, vx, vy, vz]
   measurement_dim: 3                   # Kích thước vector đo đạc: [range, azimuth, elevation]
-  dt: 0.01                             # Bước thời gian Delta t = 10.0 ms = 0.01 s (đồng bộ system.yaml)
+  dt: 0.001                            # Bước dự đoán: 1 ms, đồng bộ system.yaml
   motion_model: "constant_velocity"     # Mô hình chuyển động vận tốc không đổi (CV model)
 
   # 2. Ma trận hiệp phương sai nhiễu quá trình Q_m (Process Noise Covariance)
   #   - w_m(t) ~ N(0, Q_m)
   #   - q_s: cường độ nhiễu gia tốc liên tục = 0.4 m^2/s^3
-  #   - Q_pos = (Delta_t^3 / 3) * q_s ≈ 1.333e-7 m^2
-  #   - Q_vel = Delta_t * q_s = 4.0e-3 m^2/s^2
+  #   - q_diag là covariance rời rạc được cấu hình độc lập với dt
   # ----------------------------------------------------------------------------
   process_noise:
     continuous_noise_spectral_density: 0.4   # q_s: mật độ phổ nhiễu gia tốc (m^2/s^3)

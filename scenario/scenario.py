@@ -139,7 +139,7 @@ class Scenario:
         # 2. Cấu hình vô tuyến và OFDM 5G NR
         self.bw_hz     = [self.prb_bw_hz * 2**w for w in self.bw]
         self.fc_hz     = float(sp.get("carrier_frequency_ghz", 3.5)) * 1e9
-        self.dt        = float(sp.get("slot_duration_ms", 10.0)) * 1e-3
+        self.dt        = float(sp["slot_duration_ms"]) * 1e-3
         self.lambda_m  = SPEED_OF_LIGHT_M_S / self.fc_hz
 
         # Config pEach uses mW; internal physical calculations use W.
