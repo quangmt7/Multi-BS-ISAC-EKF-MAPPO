@@ -162,6 +162,17 @@ class ProjectConfig:
             raise ValueError("ekf_parameters.dt must match slot_duration_ms in seconds")
 
         mappo = self.data["mappo_parameters"]
+        for section, names in (
+            ("reward_weights", ("alpha_aoi", "beta_uncertainty", "gamma_power", "lambda_service")),
+            ("reward_shaping", ("k_aoi", "k_uncertainty", "k_service")),
+        ):
+            for name in names:
+                value = mappo.get(section, {}).get(name)
+                if (isinstance(value, bool) or not isinstance(value, (int, float))
+                        or not np.isfinite(value) or value < 0
+                        or (section == "reward_shaping" and value == 0)):
+                    raise ValueError(f"mappo_parameters.{section}.{name} must be finite and "
+                                     + ("positive" if section == "reward_shaping" else "non-negative"))
         self._validate_interference(system, mappo)
         training = mappo.get("training")
         if not isinstance(training, Mapping):

@@ -246,7 +246,7 @@ class WirelessChannel:
         return leakage.astype(np.float32)
     
 
-    def compute_ibi_interference(self, X_s, bs_position):
+    def compute_ibi_interference(self, X_s, bs_position, X_c=None):
         """
         Compute inter-BS radar interference.
         Parameters
@@ -260,6 +260,8 @@ class WirelessChannel:
 
         # Preserve BWP: interference couples BSs on the same BWP/PRB.
         p_bs = np.sum(p_radar, axis=2)  # [B,W,R]
+        if X_c is not None:
+            p_bs += X_c.sum(axis=(2, 3)) * np.asarray(self.pEach)[None, :, None]
         bs_position = np.asarray(bs_position, dtype=np.float32)
         B = p_bs.shape[0]
         
@@ -309,7 +311,7 @@ class WirelessChannel:
         c2s_interf = self.compute_c2s_interference(X_c, comm_gain)
 
         # Inter-BS interference, shape [B,W,M,R]
-        ibi_interf = self.compute_ibi_interference(X_s, bs_pos)
+        ibi_interf = self.compute_ibi_interference(X_s, bs_pos, X_c=X_c)
         total_interf = (self.noise_power + c2s_interf + ibi_interf)
 
         sensing_sinr_prb = np.where(X_s > 0, signal_power / np.maximum(total_interf, 1e-16), 0.0).astype(np.float32)
@@ -347,6 +349,11 @@ class WirelessChannel:
             ue_pos,
             pred_ue_pos
         )
+        # Interference at each UE from other BSs' active comm AND sensing PRBs.
+        # Reuse the current BS->UE gain approximation; antenna/gain revision is pending.
+        tx_power = (X_c.sum(axis=(2, 3)) + X_s.sum(axis=2)) * np.asarray(self.pEach)[None, :, None]
+        received = tx_power[:, :, None, None, :] * comm_gain
+        comm_interference = self.ibi_eta * np.maximum(0., received.sum(axis=0)[None] - received)
 
         # =====================================
         # Sensing channel gain
@@ -376,6 +383,7 @@ class WirelessChannel:
 
         return {
             "comm_gain": comm_gain,
+            "comm_interference": comm_interference,
             "sensing_gain": sensing_gain,
             "effective_sensing_sinr":
                 effective_sensing_sinr,

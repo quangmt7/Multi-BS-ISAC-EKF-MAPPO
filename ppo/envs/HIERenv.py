@@ -2,6 +2,90 @@ from .env import BaseISACEnv
 import numpy as np
 
 class HierISACEnv(BaseISACEnv):
+    def reset(self, seed=None):
+        result = super().reset(seed)
+        self._frame_steps = None
+        self._uses_frames = False
+        self.last_frame_summary = None
+        return result
+
+    def begin_frame(self, ratios, num_subframes):
+        """Normalize SAC ratios per BS, floor PRB quotas; hold caps for this frame.
+
+        ratios: [B,W,S+M], slices before targets. The trainer supplies the
+        frame length explicitly; no assumed physical duration or extra reset.
+        """
+        if not self._has_reset:
+            raise RuntimeError("reset before begin_frame")
+        if self._frame_steps is not None:
+            raise RuntimeError("finish the active frame before replacing its quota")
+        if isinstance(num_subframes, bool) or not isinstance(num_subframes, (int, np.integer)) or num_subframes <= 0:
+            raise ValueError("num_subframes must be a positive integer")
+        ratios = np.asarray(ratios, dtype=float)
+        if ratios.shape != self.BWP_slice.shape or not np.isfinite(ratios).all() or np.any(ratios < 0):
+            raise ValueError("SAC ratios must be finite non-negative [B,W,S+M]")
+        if not self.bwp_mode and np.any(np.count_nonzero(ratios, axis=1) > 1):
+            raise ValueError("single-BWP SAC ratios must select at most one BWP per service")
+        # Scale first to avoid overflow when summing large valid ratios.
+        scale = ratios.max(axis=(1, 2), keepdims=True)
+        scaled = np.divide(ratios, scale, out=np.zeros_like(ratios), where=scale > 0)
+        total = scaled.sum(axis=(1, 2), keepdims=True)
+        self.frame_ratios = np.divide(scaled, total, out=np.zeros_like(ratios), where=total > 0)
+        quota = np.floor(self.frame_ratios * np.asarray(self.nPrb)[None, :, None]).astype(np.int64)
+        self.set_budget(quota)
+        self._frame_length = int(num_subframes)
+        self._uses_frames = True
+        self._frame_steps = 0
+        self._frame_cost = np.zeros(4)
+        self._frame_aoi = np.zeros(self.num_targets)
+        self._frame_u_pos = np.zeros(self.num_targets)
+        self._frame_u_vel = np.zeros(self.num_targets)
+        self._frame_service = np.zeros(self.num_slices)
+        self.last_frame_summary = None
+        return quota.copy()
+
+    def step(self, actions_prb):
+        if getattr(self, "_uses_frames", False) and self._frame_steps is None:
+            raise RuntimeError("begin_frame is required before the next hierarchical step")
+        result = super().step(actions_prb)
+        if self._frame_steps is None:
+            return result
+        self._frame_steps += 1
+        self._frame_cost += self.cost_by_bs.sum(axis=0)
+        self._frame_aoi += self.aoi
+        up, uv = self._get_uncertainty_summary()
+        self._frame_u_pos += up
+        self._frame_u_vel += uv
+        counts = self.ue_mask.sum(axis=1)
+        self._frame_service += self.served_ues.sum(axis=1) / counts
+        info = result[-1]
+        info["frame_complete"] = False
+        if self._frame_steps == self._frame_length or result[3] or result[4]:
+            info["frame_summary"] = self.end_frame()
+            info["frame_complete"] = True
+        return result
+
+    def end_frame(self):
+        """Finish a complete or partial frame using actual sampled subframe count."""
+        if self._frame_steps is None or self._frame_steps == 0:
+            raise RuntimeError("no sampled frame to finish")
+        n = self._frame_steps
+        cost = self._frame_cost / n
+        aoi, up, uv = self._frame_aoi / n, self._frame_u_pos / n, self._frame_u_vel / n
+        delta = self._frame_service / n
+        normalized_cost = np.divide(cost, self.cost_max, out=np.zeros(4), where=self.cost_max > 0)
+        reward, terms = self._reward_components(aoi, up, uv, normalized_cost, delta, frame=True)
+        summary = dict(subframes=n, duration_seconds=n*self.slot_duration,
+            cost_mean=cost.copy(), normalized_cost=normalized_cost.copy(),
+            delta_E=delta[:self.num_embb].copy(), delta_U=delta[self.num_embb:].copy(),
+            service_ratios=np.concatenate((delta[:self.num_embb], delta[self.num_embb:])),
+            aoi_mean=aoi.copy(), u_pos_mean=up.copy(), u_vel_mean=uv.copy(),
+            reward=reward, **terms)
+        self.last_frame_summary = summary
+        self._frame_steps = None
+        self.set_budget(None)
+        return summary
+
     def _get_global_state(self):
         """
         Construct global state vector S_t for the Centralized Critic:

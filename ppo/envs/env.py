@@ -64,9 +64,13 @@ class BaseISACEnv(ABC):
         self.alpha = float(reward_cfg["alpha_aoi"])
         self.beta = float(reward_cfg["beta_uncertainty"])
         self.gamma = float(reward_cfg["gamma_power"])
-        if not (0 <= self.alpha <= 1 and 0 <= self.beta <= 1
-                and 0 <= self.gamma <= 1 - self.alpha):
-            raise ValueError("existing reward weights require alpha + gamma <= 1 and beta in [0,1]")
+        self.lambda_service = float(reward_cfg["lambda_service"])
+        shaping = mappo_cfg["reward_shaping"]
+        self.reward_k = np.array([shaping["k_aoi"], shaping["k_uncertainty"], shaping["k_service"]], dtype=float)
+        if not np.isfinite([self.alpha, self.beta, self.gamma, self.lambda_service]).all() or min(self.alpha, self.beta, self.gamma, self.lambda_service) < 0:
+            raise ValueError("reward weights must be finite and non-negative")
+        if not np.isfinite(self.reward_k).all() or np.any(self.reward_k <= 0):
+            raise ValueError("reward shaping coefficients must be positive")
         self.a_max = float(mappo_cfg["normalization"]["a_max"])
         self.u_pos_max = float(ekf_config["uncertainty_limits"]["u_pos_max"])
         self.u_vel_max = float(ekf_config["uncertainty_limits"]["u_vel_max"])
@@ -152,6 +156,19 @@ class BaseISACEnv(ABC):
         self.last_h_comm = np.zeros((self.num_bs, self.num_ue), dtype=float)
         self.last_h_sens = np.zeros((self.num_bs, self.num_targets), dtype=float)
         self.cost_by_bs = np.zeros((self.num_bs, 4), dtype=float)
+        self.X_c = np.zeros((self.num_bs, len(self.bwp), self.num_slices, self.ue_mask.shape[1], self.max_prb))
+        self.X_s = np.zeros((self.num_bs, len(self.bwp), self.num_targets, self.max_prb))
+        self.served_ues = np.zeros(self.ue_mask.shape, dtype=bool)
+        self.sinr_comm = np.zeros_like(self.X_c)
+        self.sinr_sensing_prb = np.zeros_like(self.X_s)
+        self.se_comm_mean = np.zeros((self.num_bs, *self.ue_mask.shape))
+        self.se_comm_min = np.zeros_like(self.se_comm_mean)
+        self.se_sensing_mean = np.zeros((self.num_bs, self.num_targets))
+        self.se_sensing_min = np.zeros_like(self.se_sensing_mean)
+        self.sinr_comm_mean = np.zeros_like(self.se_comm_mean)
+        self.sinr_comm_min = np.zeros_like(self.se_comm_min)
+        self.sinr_sensing_mean = np.zeros_like(self.se_sensing_mean)
+        self.sinr_sensing_min = np.zeros_like(self.se_sensing_min)
         self.prb.clear()
         self.power.clear()
         self.aoi_norm.clear()
@@ -222,39 +239,30 @@ class BaseISACEnv(ABC):
         self.p_res = np.maximum(0., self.p_max - used @ self.pEach)
         return x_c, x_s
 
+    def _reward_components(self, aoi, u_pos, u_vel, normalized_cost, service_ratios, *, frame=False):
+        """Positive benefits to maximize; frame service ratios are flat per-slice."""
+        ka, ku, ks = self.reward_k
+        reduce_targets = np.mean if frame else np.sum
+        sensing_aoi = float(reduce_targets(np.exp(-ka * np.asarray(aoi) / self.a_max)))
+        sensing_uncertainty = float(reduce_targets(
+            np.exp(-ku * np.asarray(u_pos) / self.u_pos_max)
+            + np.exp(-ku * np.asarray(u_vel) / self.u_vel_max)))
+        r_cost = float(4 - np.asarray(normalized_cost).sum())
+        r_service = float(np.mean(1 - np.exp(-ks * np.asarray(service_ratios))))
+        reward = float(self.alpha * sensing_aoi + self.beta * sensing_uncertainty
+                       + self.gamma * r_cost + self.lambda_service * r_service)
+        return reward, {"r_aoi": sensing_aoi, "r_uncertainty": sensing_uncertainty,
+                        "r_cost": r_cost, "r_comm": r_service}
+
     def _compute_reward(self, user_rates, user_delay, cost, p_suc, u_pos, u_vel):
-        """Repair the existing temporary reward; keep its configured weights."""
-        # Retain legacy temporary shaping; replacement by the full formulation
-        # and new coefficients is a separate model decision.
-        a_bar = float(np.mean(np.exp(-(self.aoi - self.aoi_thr / self.a_max))))
-        pos_bar = float(np.mean(np.exp(-np.asarray(u_pos) / self.u_pos_max)))
-        vel_bar = float(np.mean(np.exp(-np.asarray(u_vel) / self.u_vel_max)))
-        r_sensing = self.beta * a_bar + (1 - self.beta) * (pos_bar + vel_bar)
-        pi_e = np.asarray(user_rates) / 1e6 >= self.r_min
-        pi_u = np.asarray(user_delay) <= self.max_ue_delay
-        satisfaction = float((pi_e.sum() + pi_u.sum()) / self.num_ue)
-        r_comm = float(1 - np.exp(-satisfaction))
-        cost = np.asarray(cost, dtype=float)
-        if np.any((self.cost_max == 0) & (cost != 0)):
-            raise ValueError("nonzero cost cannot be normalized by a zero bound")
+        """DQN-style team reward. Scheduling indicator differs from QoS success."""
         normalized_cost = np.divide(cost, self.cost_max, out=np.zeros(4), where=self.cost_max > 0)
-        r_cost = float(4 - normalized_cost.sum())
-        violation_sensing = np.maximum(0., (self.p_min_sensing - np.asarray(p_suc)) / self.p_min_sensing)
-        pen_sensing = self.c2 * float(np.mean(violation_sensing**2))
-        pen_pos = self.c3 * float(np.mean(np.maximum(0., np.asarray(u_pos) / self.u_pos_max - 1)**2))
-        pen_vel = self.c4 * float(np.mean(np.maximum(0., np.asarray(u_vel) / self.u_vel_max - 1)**2))
-        # Existing c5 penalizes sensing too frequently (AoI below the threshold).
-        pen_aoi = self.c5 * float(np.mean(np.maximum(0., (self.aoi_thr - self.aoi) / self.a_max)**2))
-        r_penalty = pen_sensing + pen_pos + pen_vel + pen_aoi
-        r_obj = float(self.alpha * r_sensing + self.gamma * r_comm + (1 - self.alpha - self.gamma) * r_cost)
-        reward = float(r_obj - r_penalty)
-        return reward, r_obj, r_penalty, {
-            "reward": reward, "r_sensing": r_sensing, "r_comm": r_comm, "r_cost": r_cost,
-            "r_penalty": r_penalty, "pen_sensing": pen_sensing,
-            "norm_aoi": float(np.mean(self.aoi) / self.a_max),
-            "cost": cost.copy(), "normalized_cost": normalized_cost,
-            "suc_embb": float(np.mean(pi_e)), "suc_urllc": float(np.mean(pi_u)),
-            "violation_sensing": float(np.mean(violation_sensing))}
+        pi = np.asarray(self.served_ues, dtype=float)
+        reward, terms = self._reward_components(self.aoi, u_pos, u_vel, normalized_cost, [pi[self.ue_mask].mean()])
+        return reward, reward, 0., dict(terms, reward=reward, r_penalty=0.,
+            norm_aoi=float(np.mean(self.aoi) / self.a_max), cost=np.asarray(cost).copy(),
+            normalized_cost=normalized_cost, suc_embb=float(pi[:self.num_embb].sum() / (self.num_embb*self.num_ue_1embb)),
+            suc_urllc=float(pi[self.num_embb:].sum() / (self.num_urllc*self.num_ue_1urllc)))
 
     def step(self, actions_prb):
         """Advance one physical step; return observations, scalar reward and diagnostics."""
@@ -271,7 +279,23 @@ class BaseISACEnv(ABC):
             X_c=x_c, X_s=x_s, bs_pos=self.bs_positions, ue_pos=self.ue_positions,
             target_pos=self.target_states[:, :3], pred_target_pos=self.pred_target_states[:, :3])
         comm = self.comm_managers[0]
-        self.sinr_comm, spectral_eff = comm.compute_sinr(x_c, channel_out["comm_gain"])
+        self.sinr_comm, spectral_eff = comm.compute_sinr(
+            x_c, channel_out["comm_gain"], channel_out["comm_interference"])
+        self.X_c, self.X_s = x_c.copy(), x_s.copy()
+        self.served_ues = x_c.any(axis=(0, 1, 4))
+        self.sinr_sensing_prb = channel_out["sensing_sinr_prb"].copy()
+        self.sinr_comm_mean = self.sinr_comm.sum(axis=(1, 4)) / self.total_prb
+        self.sinr_comm_min = np.where(self.prb_mask[None, :, None, None, :], self.sinr_comm, np.inf).min(axis=(1, 4))
+        self.sinr_comm_min[:, ~self.ue_mask] = 0.
+        self.sinr_sensing_mean = self.sinr_sensing_prb.sum(axis=(1, 3)) / self.total_prb
+        self.sinr_sensing_min = np.where(self.prb_mask[None, :, None, :], self.sinr_sensing_prb, np.inf).min(axis=(1, 3))
+        # Include idle but valid PRBs (zero SINR); exclude padding only.
+        self.se_comm_mean = spectral_eff.sum(axis=(1, 4)) / self.total_prb
+        self.se_comm_min = np.where(self.prb_mask[None, :, None, None, :], spectral_eff, np.inf).min(axis=(1, 4))
+        self.se_comm_min[:, ~self.ue_mask] = 0.
+        sensing_se = np.log2(1 + self.sinr_sensing_prb)
+        self.se_sensing_mean = sensing_se.sum(axis=(1, 3)) / self.total_prb
+        self.se_sensing_min = np.where(self.prb_mask[None, :, None, :], sensing_se, np.inf).min(axis=(1, 3))
         self.eMBB_Thr = comm.compute_embb_throughput(
             x_c[:, :, :self.num_embb, :self.num_ue_1embb],
             spectral_eff[:, :, :self.num_embb, :self.num_ue_1embb])
@@ -320,6 +344,10 @@ class BaseISACEnv(ABC):
         cost = self.cost_by_bs.sum(axis=0)
         reward, _, _, reward_info = self._compute_reward(
             self.eMBB_Thr, latency_ms, cost, self.prob_suc, u_pos, u_vel)
+        local_rewards = np.array([self._reward_components(
+            self.aoi, u_pos, u_vel,
+            np.divide(row, self.cost_max_local, out=np.zeros(4), where=self.cost_max_local > 0),
+            [self.served_ues[self.ue_mask].mean()])[0] for row in self.cost_by_bs])
         self.aoi_norm.append(float(np.mean(self.aoi) / self.a_max))
         self.prb.append(float(x_s.sum() / (self.num_bs * self.total_prb)))
         self.power.append(float(np.sum(x_s * self.pEach[None, :, None, None]) / (self.num_bs * self.p_max)))
@@ -350,7 +378,7 @@ class BaseISACEnv(ABC):
             "sensing_success_prob_mean": float(np.mean(self.prob_suc)),
             "energy_cost": float(cost[0]), "switch_cost": float(cost[1]),
             "fragmentation_cost": float(cost[2]), "guardband_cost": float(cost[3]),
-            "cost_by_bs": self.cost_by_bs.copy()}
+            "cost_by_bs": self.cost_by_bs.copy(), "local_rewards": local_rewards}
         info.update(reward_info)
         return (self._get_local_observations(), self._get_global_state(), reward,
                 lost, bool(self.current_step >= self.max_steps), info)

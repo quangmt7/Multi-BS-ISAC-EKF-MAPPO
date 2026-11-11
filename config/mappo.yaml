@@ -44,15 +44,19 @@ mappo_parameters:
 
   # ----------------------------------------------------------------------------
   # 4. Trọng số hàm mục tiêu tối ưu (Objective Weights)
-  # Reward tạm hiện tại giữ tên hệ số cũ: alpha*sensing + gamma*comm
-  # + (1-alpha-gamma)*(4-sum(normalized_cost)); beta trộn các thành phần sensing.
-  # Công thức/hệ số mới theo formulation còn chờ anh Tiến chốt.
+  # Anh Tiến chốt 11/11: alpha*f(AoI) + beta*(f(Upos)+f(Uvel))
+  # + gamma*(4-sum(normalized_cost)) + lambda*(1-f(service)).
+  # Step: sum theo target; frame SAC: mean theo target/slice, cost là mean subframe.
   # ----------------------------------------------------------------------------
   reward_weights:
-    alpha_aoi: 0.25                     # alpha = 0.4: Trọng số của Age of Information (AoI)
-    beta_uncertainty: 0.55              # beta = 0.4: Trọng số của độ bất định ước lượng EKF (pos + vel)
-    gamma_power: 0.2                   # gamma = 0.2: Trọng số của công suất phát tiêu thụ
-    # Tổng: 0.4 + 0.4 + 0.2 = 1.0
+    alpha_aoi: 0.25                     # alpha: AoI
+    beta_uncertainty: 0.25              # beta: uncertainty
+    gamma_power: 0.25                   # gamma: BWP cost benefit
+    lambda_service: 0.25                # lambda: service benefit
+  reward_shaping:
+    k_aoi: 1.0                          # Giữ hệ số exp hiện có; có thể hiệu chỉnh sau
+    k_uncertainty: 1.0
+    k_service: 1.0
 
   # ----------------------------------------------------------------------------
   # 5. Các giá trị chuẩn hóa (Normalization Constants)
