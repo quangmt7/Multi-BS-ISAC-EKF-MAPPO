@@ -6,4 +6,9 @@ __pycache__/
 .env/
 .venv/
 test/
+/tests/
+/smoke_tests/
+/.tmp-tests/
+/.pytest_cache/
+/.ruff_cache/
 /results/
