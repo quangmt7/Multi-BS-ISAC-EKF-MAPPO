@@ -92,8 +92,7 @@ class MAPPOTrainer:
                 initial_local_obs, initial_global_state
             )
             self._create_missing_agent_components(local_obs_dim, global_state_dim)
-            # The legacy Actor still scores a learned power action. Silently
-            # discarding it would train a policy different from the new model.
+            # Policy log-probabilities must cover only actions applied by the environment.
             from ppo.envs.env import BaseISACEnv
             if isinstance(self.env, BaseISACEnv) and hasattr(getattr(self.agent, "actornetwork", None), "power_mean"):
                 raise RuntimeError(

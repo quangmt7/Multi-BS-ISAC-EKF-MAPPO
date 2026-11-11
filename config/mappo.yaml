@@ -20,7 +20,7 @@ mappo_parameters:
   # 2. Không gian hành động lai (Hybrid Action Space)
 
   action_space:
-    power_action_type: "continuous"    # Legacy Actor; Thuận cần đổi policy/buffer sang PRB-only trước training. Env dùng pEach cố định.
+    power_action_type: "continuous"    # Kiểu action của Actor PPO; Env sử dụng công suất PRB cố định
     power_min_watt: 0.0                # Công suất phát tối thiểu trên mỗi PRB (W)
 
   # ----------------------------------------------------------------------------
@@ -44,7 +44,7 @@ mappo_parameters:
 
   # ----------------------------------------------------------------------------
   # 4. Trọng số hàm mục tiêu tối ưu (Objective Weights)
-  # Anh Tiến chốt 11/11: alpha*f(AoI) + beta*(f(Upos)+f(Uvel))
+  # alpha*f(AoI) + beta*(f(Upos)+f(Uvel))
   # + gamma*(4-sum(normalized_cost)) + lambda*(1-f(service)).
   # Step: sum theo target; frame SAC: mean theo target/slice, cost là mean subframe.
   # ----------------------------------------------------------------------------
@@ -54,7 +54,7 @@ mappo_parameters:
     gamma_power: 0.25                   # gamma: BWP cost benefit
     lambda_service: 0.25                # lambda: service benefit
   reward_shaping:
-    k_aoi: 1.0                          # Giữ hệ số exp hiện có; có thể hiệu chỉnh sau
+    k_aoi: 1.0                          # Hệ số suy giảm của hàm exp(-k_aoi * AoI / A_max)
     k_uncertainty: 1.0
     k_service: 1.0
 

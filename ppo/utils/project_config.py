@@ -261,7 +261,7 @@ class ProjectConfig:
         if not 0 < float(ppo["clip_epsilon"]) < 1:
             raise ValueError("mappo_parameters.ppo.clip_epsilon must be in (0, 1)")
 
-        # The agreed baseline uses PPO clipping for Actor and MSE for Critic.
+        # Use PPO clipping for the actor and MSE loss for the critic.
         for name in ("use_clipped_value_loss", "use_huber_loss"):
             value = ppo.get(name, False)
             if not isinstance(value, bool):

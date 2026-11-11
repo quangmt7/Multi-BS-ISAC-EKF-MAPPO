@@ -266,7 +266,7 @@ class BaseISACEnv(ABC):
 
     def step(self, actions_prb):
         """Advance one physical step; return observations, scalar reward and diagnostics."""
-        x_c, x_s = self.action_mapping(actions_prb)  # validate BEFORE advancing time
+        x_c, x_s = self.action_mapping(actions_prb)  # Validate before advancing time.
         self.current_step += 1
         self.last_BWP_slice = self.BWP_slice.copy()
         self.BWP_slice = np.concatenate((x_c.any(axis=(3, 4)), x_s.any(axis=3)), axis=2).astype(np.int8)
@@ -302,8 +302,8 @@ class BaseISACEnv(ABC):
         current_bits = comm.compute_urllc_bits(
             x_c[:, :, self.num_embb:, :self.num_ue_1urllc],
             spectral_eff[:, :, self.num_embb:, :self.num_ue_1urllc], self.slot_duration)
-        # One continuously pending packet/UE. Overshoot is not carried into a
-        # future packet: the next arrival is at the NEXT step boundary.
+        # Each UE has one packet in service. Excess bits are discarded;
+        # the next packet starts at the following step.
         self.numBit += current_bits
         self.URLLC_Latency += self.slot_duration * 1000.
         latency_ms = self.URLLC_Latency.copy()
@@ -391,7 +391,7 @@ class BaseISACEnv(ABC):
         return self._get_uncertainty_summary()
 
     def _get_local_observations(self):
-        """Keep the existing feature layout until the state implementation lands."""
+        """Build normalized per-BS observations from tracking and channel features."""
         u_pos, u_vel = self._get_uncertainty_summary()
         target_pos = self.pred_target_states[:, :3]
         t_frac = self.current_step / self.max_steps
@@ -439,7 +439,7 @@ class BaseISACEnv(ABC):
 
     @abstractmethod
     def _get_global_state(self):
-        """Subclass observation hook; state feature design is owned by the trainer team."""
+        """Return the global state vector for the selected environment."""
         raise NotImplementedError
 
     def plot_sensing_resource_usage(self):

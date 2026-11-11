@@ -1,6 +1,6 @@
 """
 Tracking Benchmark Module for ISAC System:
-Legacy flat-allocation runner: the multi-BWP benchmark migration is pending.
+Uses flat PRB allocations and explicit transmit-power tensors.
 Comparing 3 Curves over Time Slots:
 1. Joint Cooperative EKF (Centralized Multi-BS Fusion)
 2. Each-BS Local EKF (Decentralized Tracking per Base Station)

@@ -349,8 +349,8 @@ class WirelessChannel:
             ue_pos,
             pred_ue_pos
         )
-        # Interference at each UE from other BSs' active comm AND sensing PRBs.
-        # Reuse the current BS->UE gain approximation; antenna/gain revision is pending.
+        # Interference at each UE from other BSs' active comm and sensing PRBs.
+        # Approximate interfering link gains with the BS-to-UE channel realization.
         tx_power = (X_c.sum(axis=(2, 3)) + X_s.sum(axis=2)) * np.asarray(self.pEach)[None, :, None]
         received = tx_power[:, :, None, None, :] * comm_gain
         comm_interference = self.ibi_eta * np.maximum(0., received.sum(axis=0)[None] - received)

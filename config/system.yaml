@@ -15,13 +15,13 @@ system_parameters:
   # Băng tần 5G NR FR1 (Sub-6 GHz, ví dụ băng n78 3.5 GHz)
   # SCS = 30 kHz (Numerology mu = 1), 1 PRB = 12 subcarriers * 30 kHz = 360 kHz
   # ----------------------------------------------------------------------------
-  bandwidth_mhz_bs: 20.0               # Thông tin tham khảo; chưa áp ràng buộc tổng bandwidth theo xác nhận anh Tiến
+  bandwidth_mhz_bs: 20.0               # Băng thông tham khảo (MHz); không giới hạn tổng băng thông
   bwp: [1,2]                           # BWP được dùng
-  nPrb: [30,30]                        # Số PRB mỗi BWP, anh Tiến chốt 11/11
+  nPrb: [30,30]                        # Số PRB của từng BWP
   pEach: [5,5]                         # Công suất cố định mỗi PRB (mW); PHY đổi sang W
   cost_switch: 0.3                    # Kế thừa ORAN-Pro-eMbb-URLLC/config/cons.json
   cost_gb: 2                          # Hệ số eta trong ceil(eta * |mu_w - mu_w'|), cùng nguồn BWP
-  urllc_packet_size_bits: 256          # bit/gói, anh Tiến chốt 11/11
+  urllc_packet_size_bits: 256          # Kích thước gói URLLC (bit)
   fStart: [0, 11]                     # kHz; Channel đổi sang Hz
   oleF: 1                              # Hệ số suy giảm theo tần số
   carrier_frequency_ghz: 3.5           # Tần số sóng mang trung tâm f_c = 3.5 GHz
