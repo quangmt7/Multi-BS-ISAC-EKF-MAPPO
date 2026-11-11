@@ -52,7 +52,10 @@ class BaseISACEnv(ABC):
         self.pEach = list(sys_config["pEach"])
         self.prbBw = float(sys_config["prbBw"])
         self.cost_gb = float(sys_config["cost_gb"])
-        self.cost_switch = float(sys_config["cost_switch"])
+        self.cost_switch_c = float(sys_config["cost_switch_c"])
+        self.cost_switch_s = float(sys_config["cost_switch_s"])
+        self.pa_efficiency = float(sys_config["pa_eff"])
+        self.dt = float(sys_config["dt"])
         self.noise_power = float(sys_config["noise_power_per_prb_watt"])
         
         lx = float(scenario_config["area_size_x_m"])
@@ -148,13 +151,14 @@ class BaseISACEnv(ABC):
                           for _ in range(self.num_bs)]
         # Calculate cost max here (only calculate once, just for DQN and PPO
         # When using this with SAC state, please multiply this with num_bs 
-        self.cost_max = [0,0,0,0]
+        self.cost_max = [0,0,0]
         for w in range(len(self.bwp)):
             self.cost_max[0] += self.nPrb[w] * self.pEach[w] * self.slot_duration
-        self.cost_max[1] = (self.num_targets + self.num_slices) * self.cost_switch * len(self.bwp)
-        self.cost_max[2] = (self.num_targets + self.num_slices) * self.num_bs * len(self.bwp)
-        self.cost_max[3] = self.cost_gb * (max(self.bwp) - min(self.bwp)) * \
-                           self.num_bs * (len(self.bwp) * (len(self.bwp)-1))
+        self.cost_max[0] *= (self.dt / self.pa_efficiency) 
+        self.cost_max[1] = (self.num_targets + self.num_slices) * \
+            max(self.cost_switch_c, self.cost_switch_s) * len(self.bwp)
+        self.cost_max[2] = np.ceil(self.cost_gb * (max(self.bwp) - min(self.bwp))) * len(self.bwp)
+                           
         # DQN agent của RU
         self.dqn_agent = None
 
@@ -598,12 +602,11 @@ class BaseISACEnv(ABC):
         # ==================================================
         # Cost calculation
         # ==================================================
-        energy_cost = self.calculateEnergy(X_c=X_c, X_s=X_s)
-        switch_cost = self.calculateSwitch()
-        frag_cost = self.calculateFrag()
-        guard_cost = self.calculateGuardBand()
+        energy_cost = self.compute_energy_cost(X_c=X_c, X_s=X_s)
+        switch_cost = self.compute_switching_cost()
+        guard_cost = self.compute_guardband_cost()
         cost = np.array(
-            [energy_cost, switch_cost, frag_cost, guard_cost],
+            [energy_cost, switch_cost, guard_cost],
             dtype=np.float32,
         )
 
@@ -693,7 +696,6 @@ class BaseISACEnv(ABC):
             "u_vel_mean_local_bs": u_vel_mean_bs,
             "energy_cost": float(energy_cost),
             "switch_cost": float(switch_cost),
-            "fragmentation_cost": float(frag_cost),
             "guardband_cost": float(guard_cost),
         }
         info.update(reward_info)
@@ -798,65 +800,52 @@ class BaseISACEnv(ABC):
 
         return np.stack(obs_list, axis=0)
 
-    def calculateEnergy(self, X_c, X_s):
+    def compute_energy_cost(self, X_c, X_s):
         """
         Calculate energy cost
-        Args:
-            X_c: Allocation for comm UE (eMBB & URLLC) [b][w][s][u][r]
-            X_p: Allocation for targets [b][w][m][r]
-        Return:
-            energy: Energy cost
+        Parameters
+            X_c : [B,W,S,U,R]
+            X_s : [B,W,M,R]
+        Returns
+            C_e : float
         """
-        energy = 0
-        for b in range(self.num_bs):
-            for w in range(len(self.bwp)):
-                energy += (np.count_nonzero(X_c[b][w]) + np.count_nonzero(X_s[b][w])) * \
-                           self.pEach[w] * self.slot_duration
+        p_each = np.asarray(self.pEach, dtype=np.float32)
+        eta_pa = np.asarray(self.pa_efficiency, dtype=np.float32)
+        comm_power = np.sum(X_c * p_each[None,:,None,None,None], axis=(2,3,4))
 
-        return energy
+        sens_power = np.sum(X_s * p_each[None,:,None,None], axis=(2,3))
+
+        total_power_bs = (comm_power + sens_power)
+
+        C_e_bs = ((self.dt / eta_pa) * total_power_bs)
+
+        return float(np.sum(C_e_bs))
+
+    def compute_switching_cost(self):
+        current = np.asarray(self.BWP_slice, dtype=np.float32)
+        previous = np.asarray(self.last_BWP_slice, dtype=np.float32)
+        delta = np.abs(current - previous)
+
+        target_delta = delta[:, :,:self.num_targets]
+
+        slice_delta = delta[:, :,self.num_targets:]
+
+        C_ss = (self.cost_switch_s * np.sum(target_delta))
+
+        C_sc = (self.cost_switch_c * np.sum(slice_delta))
+
+        return float(C_ss + C_sc)
     
-    def calculateSwitch(self):
-        """
-        Calculate BWP switching cost
-        Args:
-        Return:
-            switch (float): switching cost 
-        """
-        switch = 0
+    def compute_guardband_cost(self):
+        active_bwp = (np.sum(np.asarray(self.BWP_slice, dtype=np.int32), axis=2) > 0).astype(np.int32)
+        cost = 0.0
         for b in range(self.num_bs):
-            for w in range(len(self.bwp)):
-                for s in range(self.num_slices + self.num_targets):
-                    switch += self.cost_switch * self.BWP_slice[b][w][s] * (1 - self.last_BWP_slice[b][w][s])
-        return switch
-    
-    def calculateFrag(self):
-        """
-        Calculate BWP fragmentation cost
-        Args:
-        Return:
-            frag (float): fragmentation cost
-        """
-        frag = 0
-        for b in range(self.num_bs):
-            for s in range(self.num_slices + self.num_targets):
-                frag += (np.sum(self.BWP_slice[b][w][s] for w in range(len(self.bwp))))**2
-        return frag
-    
-    def calculateGuardBand(self):
-        """
-        Calculate BWP guardband cost
-        Args:
-        Return:
-            guard (float): guardband cost
-        """
-        guard = 0
-        for b in range(self.num_bs):
-            for w in range(len(self.bwp)):
-                for wk in range(len(self.bwp)):
-                    if wk != w:
-                        for s in range(self.num_slices + self.num_targets):
-                            guard += self.cost_gb * np.abs(w - wk) * self.BWP_slice[b][w][s] * self.BWP_slice[b][wk][s]
-        return guard
+            for w in range(len(self.bwp) - 1):
+                w_next = w + 1
+                G = np.ceil(self.cost_gb * abs(self.bwp[w] - self.bwp[w_next]))
+                cost += (G * active_bwp[b,w] * active_bwp[b,w_next])
+
+        return float(cost)
 
     @abstractmethod
     def _get_global_state(self):

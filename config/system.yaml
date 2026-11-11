@@ -33,6 +33,10 @@ system_parameters:
   noise_figure_db: 7.0                 # Hệ số tạp âm máy thu: NF = 7.0 dB
   noise_power_per_prb_dbm: -111.4      # Tạp âm trên 1 PRB: sigma^2 = -174 + 7 + 10*log10(360k) = -111.4 dBm
   noise_power_per_prb_watt: 7.24e-15   # sigma^2 trên 1 PRB dạng tuyến tính (Watt) = B_0 * N_0
+  cost_switch_c: 1.0                   # Chi phí chuyển BWP cho các slice eMBB, URLLC
+  cost_switch_s: 1.0                   # Chi phí chuyển BWP cho các target
+  pa_eff: 1.0                          # Hiệu suất bộ khuyêc đại của BS, sau chuyển về 0.75
+  dt: 0.001                             # THời gian một subframe
 
   # ----------------------------------------------------------------------------
   # 4. Kênh truyền, Beamforming và Can nhiễu
