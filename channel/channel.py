@@ -164,16 +164,14 @@ class WirelessChannel:
 
         # Small-scale fading
 
-        h = (self.rng.standard_normal((self.num_bs, ue_pos.shape[0], ue_pos.shape[1], self.max_prb))
-            + 1j * self.rng.standard_normal((self.num_bs, ue_pos.shape[0], ue_pos.shape[1], self.max_prb))
+        h = (self.rng.standard_normal((self.num_bs, num_bwp, ue_pos.shape[0], ue_pos.shape[1], self.max_prb))
+            + 1j * self.rng.standard_normal((self.num_bs, num_bwp, ue_pos.shape[0], ue_pos.shape[1], self.max_prb))
         ) / np.sqrt(2.0)
         G_fading = np.abs(h) ** 2
 
         # Effective gain
-        base_gain = (G_path[..., None] * beam_gain[..., None] * self.g_rx * G_fading)
-
-        # Expand BWP dimension
-        comm_gain = np.repeat(base_gain[:, None, :, :, :], num_bwp, axis=1)
+        comm_gain = (G_path[:, None, :, :, None] * beam_gain[:, None, :, :, None]
+                     * self.g_ant * G_fading)
         comm_gain *= self.prb_mask[None, :, None, None, :]
 
         return comm_gain.astype(np.float32)
@@ -204,15 +202,12 @@ class WirelessChannel:
         beam_gain = (self.compute_sensing_beamforming_gain(bs_pos, target_pos, pred_target_pos))
 
         # Small-scale fading
-        h = (self.rng.standard_normal((self.num_bs, self.num_targets, self.max_prb)) + \
-            1j * self.rng.standard_normal((self.num_bs, self.num_targets, self.max_prb))) / np.sqrt(2.0)
+        h = (self.rng.standard_normal((self.num_bs, num_bwp, self.num_targets, self.max_prb)) + \
+            1j * self.rng.standard_normal((self.num_bs, num_bwp, self.num_targets, self.max_prb))) / np.sqrt(2.0)
         G_fading = np.abs(h) ** 2
         
         # Effective sensing gain
-        base_gain = (G_path[:, :, None] * beam_gain[:, :, None] ** 2 * G_fading)
-
-        # Expand BWP dimension
-        sensing_gain = np.repeat(base_gain[:, None, :, :], num_bwp, axis=1)
+        sensing_gain = (G_path[:, None, :, None] * beam_gain[:, None, :, None] ** 2 * G_fading)
         sensing_gain *= self.prb_mask[None, :, None, :]
 
         return sensing_gain.astype(np.float32)
@@ -245,11 +240,12 @@ class WirelessChannel:
         return leakage.astype(np.float32)
     
 
-    def compute_ibi_interference(self, X_s, bs_position, X_c=None):
+    def compute_ibi_interference(self, X_s, X_c, bs_position):
         """
         Compute inter-BS radar interference.
         Parameters
             X_s : (np.ndarray, [B,W,M,R]) Sensing allocation matrix.
+            X_c : (np.ndarray | None, [B,W,S,U,R]) Communication allocation.
             bs_position : (np.ndarray, [B,3])
         Returns
             ibi_interf : (np.ndarray, [B,W,1,R]) Interference observed at each BS.
@@ -282,7 +278,7 @@ class WirelessChannel:
         return ibi_interf[:, :, None, :].astype(np.float32)
 
  
-    def get_sensing_sinr(self, X_s, X_c, bs_pos, target_pos, pred_target_pos=None, sensing_gain=None):
+    def get_sensing_sinr(self, X_s, X_c, bs_pos, target_pos, pred_target_pos=None, sensing_gain=None, ibi_interf=None):
         """
         Compute sensing SINR.
         Parameters
@@ -292,6 +288,7 @@ class WirelessChannel:
             target_pos : (np.ndarray, [M,3])
             pred_target_pos : (np.ndarray | None, [M,3])
             sensing_gain : (np.ndarray | None, [B,W,M,R]) Precomputed echo gain.
+            ibi_interf : (np.ndarray | None, [B,W,1,R]) Precomputed inter-BS interference.
         Returns
             effective_sensing_sinr : (np.ndarray, [B,M])
             sensing_sinr_prb : (np.ndarray, [B,W,M,R])    
@@ -310,7 +307,8 @@ class WirelessChannel:
         c2s_interf = self.compute_c2s_interference(X_c)
 
         # Inter-BS interference, shape [B,W,M,R]
-        ibi_interf = self.compute_ibi_interference(X_s, bs_pos, X_c=X_c)
+        if ibi_interf is None:
+            ibi_interf = self.compute_ibi_interference(X_s, X_c, bs_pos)
         total_interf = (noise_power_w + c2s_interf + ibi_interf)
 
         sensing_sinr_prb = np.where(X_s > 0, signal_power / np.maximum(total_interf, 1e-16), 0.0).astype(np.float32)
@@ -319,6 +317,22 @@ class WirelessChannel:
         effective_sensing_sinr = np.sum(sensing_sinr_prb, axis=(1, 3)).astype(np.float32)
 
         return (effective_sensing_sinr, sensing_sinr_prb)
+
+    def get_comm_sinr(self, X_c, X_s, bs_pos, ue_pos, pred_ue_pos=None, comm_gain=None, ibi_interf=None):
+        """Return communication SINR summed over PRBs and per PRB.
+
+        Reuse precomputed gains and [B,W,1,R] IBI when supplied.
+        Outputs: [B,W,S,U] and [B,W,S,U,R].
+        """
+        if comm_gain is None:
+            comm_gain = self.get_comm_channel_gain(bs_pos, ue_pos, pred_ue_pos)
+        if ibi_interf is None:
+            ibi_interf = self.compute_ibi_interference(X_s, X_c, bs_pos)
+        signal = X_c * comm_gain * self.pEach[None, :, None, None, None]
+        noise = (self.noise_power * 2.0 ** np.asarray(self.bwp))[None, :, None, None, None]
+        denominator = noise + ibi_interf[:, :, None, :, :]
+        sinr = np.where(X_c > 0, signal / np.maximum(denominator, 1e-16), 0.0).astype(np.float32)
+        return sinr.sum(axis=-1), sinr
     
     
     def step(self, X_c, X_s, bs_pos, ue_pos, target_pos, pred_target_pos=None, pred_ue_pos=None):
@@ -348,11 +362,7 @@ class WirelessChannel:
             ue_pos,
             pred_ue_pos
         )
-        # Interference at each UE from other BSs' active comm and sensing PRBs.
-        # Approximate interfering link gains with the BS-to-UE channel realization.
-        tx_power = (X_c.sum(axis=(2, 3)) + X_s.sum(axis=2)) * np.asarray(self.pEach)[None, :, None]
-        received = tx_power[:, :, None, None, :] * comm_gain
-        comm_interference = self.ibi_eta * np.maximum(0., received.sum(axis=0)[None] - received)
+        ibi_interf = self.compute_ibi_interference(X_s, X_c, bs_pos)
 
         # =====================================
         # Sensing channel gain
@@ -376,12 +386,18 @@ class WirelessChannel:
                 target_pos=target_pos,
                 pred_target_pos=pred_target_pos,
                 sensing_gain=sensing_gain,
+                ibi_interf=ibi_interf,
             )
         )
 
+        effective_comm_sinr, comm_sinr_prb = self.get_comm_sinr(
+            X_c, X_s, bs_pos, ue_pos, pred_ue_pos,
+            comm_gain=comm_gain, ibi_interf=ibi_interf)
         return {
             "comm_gain": comm_gain,
-            "comm_interference": comm_interference,
+            "comm_interference": np.broadcast_to(ibi_interf[:, :, None, :, :], comm_gain.shape).copy(),
+            "effective_comm_sinr": effective_comm_sinr,
+            "comm_sinr_prb": comm_sinr_prb,
             "sensing_gain": sensing_gain,
             "effective_sensing_sinr":
                 effective_sensing_sinr,

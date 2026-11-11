@@ -157,28 +157,11 @@ class Scenario:
 
         # 3. Tham số kênh truyền, Beamforming và Can nhiễu
         ci = sp.get("channel_and_interference", {})
-        self.pl_model         = str(ci.get("pathloss_model", "3gpp_macro"))
-        self.pl_const_db      = float(ci.get("pathloss_const_db", 128.1))           # Hằng số 128.1 dB 
-        self.pl_exp_comm      = float(ci.get("pathloss_exponent_comm", 37.6))        # Hệ số 37.6 * log10(d_km) 
-        self.pl_exp_sensing   = float(ci.get("pathloss_exponent_sensing", 2.0))     # alpha_s = 2.0 (suy hao 2 chiều ~ d^4)
         self.shadowing_std_db = float(ci.get("shadowing_std_db", 6.0))              # sigma_SF = 6.0 dB 
         self.rcs_sqm          = float(ci.get("target_rcs_sqm", 1.0))
 
         # Đặc tính ăng-ten & Beamforming 
         self.num_antennas_bs  = int(ci.get("num_antennas_bs", 64))                  # N_b = 64
-        # G_ant: Độ lợi của 1 phần tử antenna đơn lẻ 
-        self.g_ant_lin        = float(ci.get("antenna_element_gain_linear", 10.0 ** (float(ci.get("antenna_element_gain_dbi", 0.0)) / 10.0)))
-        # G_b / G_max: Độ lợi phát cực đại của mảng antenna BS
-        self.ant_gain_tx_lin  = float(ci.get("antenna_gain_tx_linear", 10.0 ** (float(ci.get("antenna_gain_tx_dbi", 15.0)) / 10.0)))
-        self.ant_gain_rx_lin  = float(ci.get("antenna_gain_rx_linear", 10.0 ** (float(ci.get("antenna_gain_rx_dbi", 15.0)) / 10.0)))
-        self.beam_pattern_q   = float(ci.get("beam_pattern_q", 2.0))                # q = 2.0 
-        
-        # Độ lợi búp sóng phát cực đại G_max = G_b (15.0 dBi = 31.62)
-      
-        if "antenna_gain_tx_linear" in ci or "antenna_gain_tx_dbi" in ci:
-            self.g_max_lin = float(self.ant_gain_tx_lin) # G_max = G_b = 15.0 dBi (tuyến tính 31.62)
-        else:
-            self.g_max_lin = float(self.num_antennas_bs * self.g_ant_lin)
 
         # Tham số can nhiễu C2S, S2C và IBI
         self.eta0_c2s         = float(ci.get("c2s_leakage_eta0", 1.0e-3))           # eta_0 = 10^-3 (-30 dB)
@@ -204,44 +187,6 @@ class Scenario:
         self.tgt_v_min = float(sc.get("target_velocity_min_mps", 5.0))
         self.tgt_v_max = float(sc.get("target_velocity_max_mps", 25.0))
 
-        # Ràng buộc chỉ tiêu hệ thống (requirements)
-        req = sp.get("requirements", {})
-        self.req_r_min_bps      = float(req.get("min_ue_rate_mbps", 1.0)) * 1e6      # R_k^min = 1.0 Mbps
-        self.req_p_m_min        = float(req.get("min_sensing_success_prob", 0.90))  # P_m^min = 0.90
-        self.req_prob_false_alm = float(req.get("max_prob_false_alarm", 1.0e-4))    # P_F = 1.0e-4
-
-        # Các hằng số chuẩn hóa & trọng số thưởng/phạt mặc định 
-        self.alpha     = 0.4
-        self.beta      = 0.4
-        self.gamma     = 0.2
-        self.c1        = 0.2
-        self.c2        = 0.2
-        self.c3        = 0.1
-        self.c4        = 0.1
-        self.a_max     = 20.0
-        self.u_pos_max = 20.0
-        self.u_vel_max = 10.0
-
-        
-        if cfg_mappo is not None:
-            mp = cfg_mappo.get("mappo_parameters", cfg_mappo)
-            rw = mp.get("reward_weights", {})
-            self.alpha = float(rw.get("alpha_aoi", self.alpha))
-            self.beta  = float(rw.get("beta_uncertainty", self.beta))
-            self.gamma = float(rw.get("gamma_power", self.gamma))
-
-            pen = mp.get("penalties", {})
-            self.c1 = float(pen.get("c1_rate_qos", pen.get("penalty_rate_qos", self.c1)))
-            self.c2 = float(pen.get("c2_sensing_reliability", pen.get("penalty_sensing_reliability", self.c2)))
-            self.c3 = float(pen.get("c3_pos_uncertainty", pen.get("penalty_uncertainty", self.c3)))
-            self.c4 = float(pen.get("c4_vel_uncertainty", pen.get("penalty_uncertainty", self.c4)))
-
-            norm_cfg = mp.get("normalization", {})
-            self.a_max     = float(norm_cfg.get("a_max", self.a_max))
-            self.u_pos_max = float(norm_cfg.get("u_pos_max", self.u_pos_max))
-            self.u_vel_max = float(norm_cfg.get("u_vel_max", self.u_vel_max))
-            self.d_max     = float(norm_cfg.get("diagonal_max_m", self.d_max))
-
         # 4. Mô hình động học CV (Constant Velocity) cho EKF
         dt = self.dt
         self.F = np.block([
@@ -259,32 +204,10 @@ class Scenario:
             [(dt**2 / 2.0) * np.eye(3),  dt * np.eye(3)]
         ])
 
-        # Bảng tra khoảng cách PRB cho nhiễu C2S leakage 
-        r_idx = np.arange(self.max_prb)
-
-        dist_rr = np.abs(r_idx[:, None] - r_idx[None, :])
-        self.c2s_lookup = self.eta0_c2s * np.exp(-self.alpha_c2s * dist_rr)
-
         # 5. Khởi tạo các thực thể mạng
         self.base_stations = self._init_base_stations()
         self.ues           = self._init_ues()
         self.targets       = self._init_targets()
-
-        # 6. Kênh truyền thông:
-        # channel_comm: ma trận hệ số fading nhanh h^c_{b,k,r} ~ CN(0, 1)
-        # channel_gain_comm: độ lợi kênh hiệu dụng G^c_{b,k,r}(t) 
-        self.channel_comm = np.zeros((self.B, len(self.nPrb), self.num_slices, 
-                                      self.num_ues_max, self.max_prb), dtype=np.complex64)
-        self.channel_gain_comm = np.zeros((self.B, len(self.nPrb), self.num_slices, self.num_ues_max,
-                                        self.max_prb), dtype=np.float32)
-        self.sinr_comm = np.zeros((self.B, len(self.nPrb), self.num_slices, self.num_ues_max,
-                                    self.max_prb), dtype=np.float32)
-        self._update_channel_comm()
-
-        # Bộ đệm kết quả slot hiện tại
-        self.sinr_sensing = np.zeros((self.B, len(self.nPrb), self.M, self.max_prb), dtype=np.float32)
-        self.prob_detect  = np.zeros((self.B, self.M), dtype=np.float64)
-        self.prob_success = np.zeros(self.M, dtype=np.float64)
         self.current_slot = 0
 
     # =========================================================================
@@ -374,431 +297,6 @@ class Scenario:
             ))
         return target_list
 
-    # =========================================================================
-    # Kênh truyền thông & Kênh Radar
-    # =========================================================================
-    def _update_channel_comm(self):
-        """
-        channel_comm: [B,W,S,U,Rmax]
-        channel_gain_comm: [B,W,S,U,Rmax]
-        """
-        self.channel_comm.fill(0.0)
-        self.channel_gain_comm.fill(0.0)
-        for b, bs in enumerate(self.base_stations):
-            for s in range(self.num_slices):
-                num_ue = (self.num_ue_1embb if self.slice_type[s] == 0 else self.num_ue_1urllc)
-                for u in range(num_ue):
-                    ue = self.ues[s][u]
-                    d_m = max(
-                        np.linalg.norm(bs.position - ue.position),
-                        self.ue_min_dist_bs
-                    )
-                    d_km = d_m / 1000.0
-                    pl_db = (self.pl_const_db + self.pl_exp_comm * np.log10(d_km))
-                    g_path = 10.0 ** (-pl_db / 10.0)
-                    if self.shadowing_std_db > 0:
-                        chi_db = self.rng.normal(0.0, self.shadowing_std_db)
-                        sh_lin = 10.0 ** (chi_db / 10.0)
-                    else:
-                        sh_lin = 1.0
-                    for w, n_prb in enumerate(self.nPrb):
-                        h = (self.rng.standard_normal(n_prb) + 1j * self.rng.standard_normal(n_prb)
-                            ) / np.sqrt(2.0)
-                        self.channel_comm[b, w, s, u, :n_prb] = h
-                        h2 = np.abs(h) ** 2
-                        self.channel_gain_comm[b, w, s, u, :n_prb] = (g_path * sh_lin * h2
-                            * self.g_max_lin * self.ue_ant_gain_lin)
-
-    def compute_beamforming_gain(
-        self,
-        bs_pos: np.ndarray,
-        true_pos: np.ndarray,
-        pred_pos: Optional[np.ndarray] = None
-    ) -> float:
-
-        if pred_pos is None:
-            return float(self.g_max_lin)
-
-        diff_pred = pred_pos - bs_pos
-        norm_pred = np.linalg.norm(diff_pred)
-        diff_true = true_pos - bs_pos
-        norm_true = np.linalg.norm(diff_true)
-
-        if norm_pred < 1e-6 or norm_true < 1e-6:
-            return float(self.g_max_lin)
-
-        u_beam = diff_pred / norm_pred
-        u_true = diff_true / norm_true
-
-        cos_psi = np.clip(np.dot(u_beam, u_true), -1.0, 1.0)
-        gain = self.g_max_lin * (np.abs(cos_psi) ** self.beam_pattern_q)
-        return float(gain)
-
-    def compute_prob_detection(
-        self,
-        gamma_s_bm: np.ndarray,
-        prob_false_alarm: Optional[float] = None
-    ) -> np.ndarray:
-        """
-        Tính xác suất phát hiện Neyman-Pearson:
-        P^D_{b,m}(t) = 0.5 * erfc[ erfc^{-1}(2 * P_F) - sqrt(Gamma^s_{b,m}(t)) ]
-        """
-        if prob_false_alarm is None:
-            prob_false_alarm = self.req_prob_false_alm
-
-        erfc_inv_2pf = np.sqrt(2.0) * erfinv(1.0 - 2.0 * prob_false_alarm)
-        gamma_clipped = np.clip(gamma_s_bm, 0.0, None)
-        arg = erfc_inv_2pf - np.sqrt(gamma_clipped)
-        prob_detect = 0.5 * erfc(arg)
-
-        self.prob_detect = np.clip(prob_detect, 0.0, 1.0)
-        return self.prob_detect
-
-    def compute_prob_success(self, prob_detect: Optional[np.ndarray] = None) -> np.ndarray:
-        """
-        Tính xác suất sensing thành công tổng hợp từ các BS:
-        P^{suc}_m(t) = 1 - prod_{b in B} (1 - P^D_{b,m}(t))
-        """
-        if prob_detect is None:
-            prob_detect = self.prob_detect
-
-        prob_miss_all = np.prod(1.0 - prob_detect, axis=0)  
-        self.prob_success = np.clip(1.0 - prob_miss_all, 0.0, 1.0)
-        return self.prob_success
-
-    # =========================================================================
-    # Cập nhật AoI 
-    # =========================================================================
-    def update_aoi(
-        self,
-        prob_success: Optional[np.ndarray] = None,
-        min_success_prob: Optional[float] = None,
-        reset_value: int = 0
-    ) -> np.ndarray:
-        """
-        Cập nhật Age of Information A_m(t):
-            A_m(t+1) = 0           khi D_m(t) = 1 (P^{suc}_m >= P^{min}_m)
-            A_m(t+1) = A_m(t) + 1  khi D_m(t) = 0
-        """
-        if prob_success is None:
-            prob_success = self.prob_success
-        if min_success_prob is None:
-            min_success_prob = self.req_p_m_min
-
-        sensing_success = (prob_success >= min_success_prob)
-
-        aoi_vec = np.array([tgt.aoi for tgt in self.targets], dtype=np.float64)
-        aoi_new = np.where(sensing_success, float(reset_value), aoi_vec + 1.0)
-
-        for m_idx, tgt in enumerate(self.targets):
-            tgt.aoi = int(aoi_new[m_idx])
-
-        return aoi_new
-
-    def compute_comm_rate(self, sinr_comm: np.ndarray, X_c: np.ndarray) -> np.ndarray:
-        """
-        Compute communication throughput.
-        Parameters
-            sinr_comm : (np.ndarray, [B,W,S,U_max,R_max])
-            X_c : (np.ndarray, [B,W,S,U_max,R_max])
-        Returns
-            rate_bps : (np.ndarray, [S,U_max])      
-        """
-        rate_bps = np.zeros((self.num_slices, self.num_ues_max), dtype=np.float32)
-        for w, n_prb in enumerate(self.nPrb):
-            bw_prb = self.bw_hz[w]
-            se = np.log2(1.0 + np.maximum(sinr_comm[:, w, :, :, :n_prb], 0.0))
-            rate_bps += np.sum( X_c[:, w, :, :, :n_prb] * bw_prb * se, axis=(0, 3))
-        rate_bps *= self.get_ue_mask()
-        return rate_bps
-
-    # =========================================================================
-# Động học mục tiêu và Vector đo đạc EKF
-# =========================================================================
-    def step_targets(self) -> None:
-        """Propagate every target with independent process noise.
-
-        Argument:
-            (None).
-
-        Return:
-            (None).
-
-        Note:
-            Each target reflects its velocity at the simulation boundaries.
-        """
-        for tgt in self.targets:
-            w_m = self.rng.multivariate_normal(
-                np.zeros(6), self.Q_m
-            )
-            new_state = self.F @ tgt.state + w_m
-
-            if new_state[0] < 0.0 or new_state[0] > self.area_x:
-                new_state[3] = -new_state[3]
-                new_state[0] = np.clip(new_state[0], 0.0, self.area_x)
-
-            if new_state[1] < 0.0 or new_state[1] > self.area_y:
-                new_state[4] = -new_state[4]
-                new_state[1] = np.clip(new_state[1], 0.0, self.area_y)
-
-            if new_state[2] < self.tgt_h_min or new_state[2] > self.tgt_h_max:
-                new_state[5] = -new_state[5]
-                new_state[2] = np.clip(
-                    new_state[2], self.tgt_h_min, self.tgt_h_max
-                )
-
-            tgt.state = new_state
-
-    def get_measurement_vectors(self) -> np.ndarray:
-        """
-        Tính vector đo đạc lý tưởng e_{b,m} = [r, theta, phi]^T :
-            r_{b,m}     = sqrt(dx^2 + dy^2 + dz^2)
-            theta_{b,m} = arctan2(dy, dx)
-            phi_{b,m}   = arctan2(dz, sqrt(dx^2 + dy^2))
-
-        Returns
-        -------
-        meas : np.ndarray, shape (B, M, 3)
-        """
-        bs_pos  = self.get_bs_positions()     # (B, 3)
-        tgt_pos = self.get_target_positions() # (M, 3)
-
-        meas = np.zeros((self.B, self.M, 3), dtype=np.float64)
-        for b_idx in range(self.B):
-            for m_idx in range(self.M):
-                dx = tgt_pos[m_idx, 0] - bs_pos[b_idx, 0]
-                dy = tgt_pos[m_idx, 1] - bs_pos[b_idx, 1]
-                dz = tgt_pos[m_idx, 2] - bs_pos[b_idx, 2]
-
-                r = np.sqrt(dx**2 + dy**2 + dz**2)
-                r = max(r, 1e-3)
-
-                theta = np.arctan2(dy, dx)
-                d_xy  = np.sqrt(dx**2 + dy**2)
-                phi   = np.arctan2(dz, d_xy)
-
-                meas[b_idx, m_idx, :] = [r, theta, phi]
-
-        return meas
-
-    # =========================================================================
-    # State Vector toàn cục chuẩn hóa S_t 
-    # =========================================================================
-    def compute_state_vector(
-        self,
-        u_pos: np.ndarray,                             
-        u_vel: np.ndarray,                             
-        pred_target_positions: np.ndarray,            
-        power_alloc: np.ndarray,                      
-        alloc_matrix: np.ndarray,                      
-        u_pos_max: Optional[float] = None,
-        u_vel_max: Optional[float] = None,
-        a_max: Optional[float] = None,
-    ) -> np.ndarray:
-        
-        M = self.M
-        B = self.B
-        S = self.num_slices
-        U = self.num_ues_max
-        u_pos_max = u_pos_max or self.u_pos_max
-        u_vel_max = u_vel_max or self.u_vel_max
-        a_max = a_max or self.a_max
-
-        # 1. Tỉ lệ về độ bất định vị trí & vận tốc: U~_m^pos, U~_m^vel in [0, 1]
-        u_pos_norm = np.clip(u_pos / u_pos_max, 0.0, 1.0)
-        u_vel_norm = np.clip(u_vel / u_vel_max, 0.0, 1.0)
-
-        # 2. Tỉ lệ về tuổi thông tin: A~_m(t) in [0, 1]
-        aoi_vec = self.get_aoi()
-        aoi_norm = np.clip(aoi_vec / a_max, 0.0, 1.0)
-
-        # 3. Chuẩn hóa khoảng cách tương đối dự đoán: d~_{b,m}^pred in [0, 1]
-        # d~_{b,m}^pred(t) = ||p^_m(t|t-1) - p_b||_2 / d_max
-        bs_pos = self.get_bs_positions()  # (B, 3)
-        d_pred = np.linalg.norm(pred_target_positions[None, :, :] - bs_pos[:, None, :], axis=2)  # (B, M)
-        d_pred_norm = np.clip(d_pred / self.d_max, 0.0, 1.0).flatten()  # (25,)
-
-        # 4. Hiệu suất phổ H~_{b,k}^avg(t) = log2(1 + SINR_bar_{b,k})
-        h_avg_comm = np.zeros((B, S, U), dtype=np.float32)
-        for b in range(B):
-            for s in range(S):
-                num_ue = (self.num_ue_1embb if self.slice_type[s] == 0 else self.num_ue_1urllc)
-                for u in range(num_ue):
-                    sinr_bsu = self.sinr_comm[b, :, s, u, :]
-                    valid = sinr_bsu > 0
-                    if np.any(valid):
-                        sinr_mean = np.mean(sinr_bsu[valid])
-                    else:
-                        sinr_mean = 0.0
-                    h_avg_comm[b, s, u] = np.log2(1.0 + sinr_mean)
-        h_avg_comm_flat = h_avg_comm.flatten()
-
-        # 5. Hiệu suất phổ cảm biến H~_{b,m}^avg(t) = log2(1 + SINR_bar_{b,m}) 
-        h_avg_sens = np.zeros((B, M), dtype=np.float64)
-        for b in range(B):
-            for m in range(M):
-                sinr_mean = 0.0
-                mask_bm = (alloc_matrix[b] == (m + 1))
-                if np.any(mask_bm):
-                    sinr_bm = self.sinr_sensing[b, :, m, :]
-                    valid = sinr_bm > 0
-                    if np.any(valid):
-                        sinr_mean = np.mean(sinr_bm[valid])
-                h_avg_sens[b, m] = np.log2(1.0 + sinr_mean)
-        h_avg_sens_flat = h_avg_sens.flatten()  
-
-        # 6. Tỉ lệ công suất còn lại: P~_b^res(t) = P_b^res / P_b^max
-        p_used_b = np.sum(power_alloc, axis=1)  # (B,)
-        p_res_b = np.clip((self.p_max_w - p_used_b) / self.p_max_w, 0.0, 1.0)  # (5,)
-
-        # 7. Tỉ lệ PRB còn lại: N~_b^res(t) = N_b^res / N_PRB
-        n_used_b = np.sum(alloc_matrix != 0, axis=1)  # (B,)
-        total_prb = np.sum(self.nPrb)
-        n_res_b = np.clip((total_prb - n_used_b) / float(total_prb), 0.0, 1.0)
-
-        s_t = np.concatenate([
-            u_pos_norm.flatten(),
-            u_vel_norm.flatten(),
-            aoi_norm.flatten(),
-            d_pred_norm,
-            h_avg_comm_flat,
-            h_avg_sens_flat,
-            p_res_b.flatten(),
-            n_res_b.flatten()
-        ]).astype(np.float32)
-        return s_t
-
-    # =========================================================================
-    # Hàm mục tiêu và Hàm phần thưởng Reward 
-    # =========================================================================
-    def compute_reward(
-        self,
-        rate_bps: np.ndarray,             # shape: (S,U_max)
-        prob_success: np.ndarray,         # shape: (M,)
-        u_pos: np.ndarray,                # shape: (M,)
-        u_vel: np.ndarray,                # shape: (M,)
-        power_alloc: np.ndarray,          
-        alpha: Optional[float] = None,
-        beta: Optional[float] = None,
-        gamma: Optional[float] = None,
-        c1: Optional[float] = None,
-        c2: Optional[float] = None,
-        c3: Optional[float] = None,
-        c4: Optional[float] = None,
-        a_max: Optional[float] = None,
-        u_pos_max: Optional[float] = None,
-        u_vel_max: Optional[float] = None,
-        p_max: Optional[float] = None
-    ) -> Tuple[float, Dict[str, float]]:
-       
-        alpha = self.alpha if alpha is None else alpha
-        beta  = self.beta  if beta  is None else beta
-        gamma = self.gamma if gamma is None else gamma
-        c1    = self.c1    if c1    is None else c1
-        c2    = self.c2    if c2    is None else c2
-        c3    = self.c3    if c3    is None else c3
-        c4    = self.c4    if c4    is None else c4
-        a_max = a_max or self.a_max
-        u_pos_max = u_pos_max or self.u_pos_max
-        u_vel_max = u_vel_max or self.u_vel_max
-        p_max = p_max or self.p_max_w
-
-        # AoI trung bình
-        aoi_vec = self.get_aoi()
-        a_bar = float(np.mean(aoi_vec))
-
-        # Độ bất định trung bình
-        u_bar_pos = float(np.mean(u_pos))
-        u_bar_vel = float(np.mean(u_vel))
-
-        # Tổng công suất tiêu thụ trung bình mỗi BS
-        p_total_used = float(np.sum(power_alloc))
-        p_used_per_bs = p_total_used / float(self.B)
-
-        # 1. Thành phần mục tiêu chuẩn hóa R_obj 
-        term_aoi = alpha * (a_bar / a_max)
-        term_unc = beta * ((u_bar_pos / u_pos_max) + (u_bar_vel / u_vel_max))
-        term_pow = gamma * (p_used_per_bs / p_max)
-        r_obj = - (term_aoi + term_unc + term_pow)
-
-        # 2. Thành phần phạt Hinge Loss R_penalty 
-        # c1: Phạt vi phạm QoS truyền thông: R_k < R_min
-        r_min = self.req_r_min_bps
-        viol_rate = np.maximum(0.0, (r_min - rate_bps) / r_min)
-        pen_rate = c1 * float(np.sum(viol_rate))
-
-        # c2: Phạt suy giảm xác suất sensing: P_suc < P_min
-        p_min_sens = self.req_p_m_min
-        viol_sens = np.maximum(0.0, (p_min_sens - prob_success) / p_min_sens)
-        pen_sens = c2 * float(np.sum(viol_sens))
-
-        # c3: Phạt vượt ngưỡng bất định vị trí: U_pos > U_pos_max
-        viol_upos = np.maximum(0.0, (u_pos - u_pos_max) / u_pos_max)
-        pen_upos = c3 * float(np.sum(viol_upos))
-
-        # c4: Phạt vượt ngưỡng bất định vận tốc: U_vel > U_vel_max
-        viol_uvel = np.maximum(0.0, (u_vel - u_vel_max) / u_vel_max)
-        pen_uvel = c4 * float(np.sum(viol_uvel))
-
-        r_penalty = pen_rate + pen_sens + pen_upos + pen_uvel
-        r_t = r_obj - r_penalty
-
-        info = {
-            "reward_total": r_t,
-            "r_obj": r_obj,
-            "r_penalty": r_penalty,
-            "pen_rate_qos": pen_rate,
-            "pen_sensing_rel": pen_sens,
-            "pen_pos_unc": pen_upos,
-            "pen_vel_unc": pen_uvel,
-            "a_bar": a_bar,
-            "u_bar_pos": u_bar_pos,
-            "u_bar_vel": u_bar_vel,
-            "p_used_total": p_total_used
-        }
-        return r_t, info
-
-    # =========================================================================
-    # Step & Reset Interface cho Environment
-    # =========================================================================
-    def step(
-        self, rate_bps: np.ndarray,  sinr_sensing: np.ndarray,
-        sinr_sensing_agg: np.ndarray, prob_false_alarm=None,
-        min_success_prob=None) -> Dict:
-        """
-        Thực hiện một time slot đầy đủ của kịch bản ISAC.
-        """
-        self.sinr_comm.fill(0.0)
-        self.sinr_sensing.fill(0.0)
-        self.prob_detect.fill(0.0)
-        self.prob_success.fill(0.0)
-        # Cập nhật kênh truyền thông hiệu dụng với 3GPP Macro & Log-normal Shadowing
-        self._update_channel_comm()
-
-        # Xác suất phát hiện và xác suất sensing thành công 
-        prob_detect  = self.compute_prob_detection(sinr_sensing_agg, prob_false_alarm)
-        prob_success = self.compute_prob_success(prob_detect)
-
-        # Cập nhật Age of Information 
-        aoi_new = self.update_aoi(prob_success, min_success_prob, reset_value=0)
-
-        # Cập nhật động học mục tiêu sang slot t+1
-        self.step_targets()
-        self.current_slot += 1
-
-        return {
-            "slot"             : self.current_slot,
-            "sinr_sensing"     : sinr_sensing,
-            "sinr_sensing_agg" : sinr_sensing_agg,
-            "prob_detect"      : prob_detect,
-            "prob_success"     : prob_success,
-            "rate_bps"         : rate_bps,
-            "aoi"              : aoi_new,
-            "target_states"    : self.get_target_states(),
-            "bs_positions"     : self.get_bs_positions(),
-            "ue_positions"     : self.get_ue_positions(),
-        }
-
     def reset(self, seed: Optional[int] = None) -> Dict:
         """
         Reset kịch bản cho episode mới.
@@ -808,12 +306,7 @@ class Scenario:
 
         self.ues          = self._init_ues()
         self.targets      = self._init_targets()
-        self._update_channel_comm()
         self.current_slot = 0
-        self.sinr_comm.fill(0.0)
-        self.sinr_sensing.fill(0.0)
-        self.prob_detect.fill(0.0)
-        self.prob_success.fill(0.0)
 
         return {
             "slot"          : 0,
@@ -868,6 +361,22 @@ class Scenario:
         distance = np.linalg.norm(bs_pos[:, None, None, :] - ue_pos[None, :, :, :], axis=-1)
 
         return distance.astype(np.float32)
+    
+    def step_targets(self) -> None:
+        """Advance targets once; reflect velocity at the simulation boundaries."""
+        for tgt in self.targets:
+            noise = self.rng.multivariate_normal(np.zeros(6), self.Q_m)
+            state = self.F @ tgt.state + noise
+            for axis, lo, hi in ((0, 0.0, self.area_x), (1, 0.0, self.area_y),
+                                 (2, self.tgt_h_min, self.tgt_h_max)):
+                if state[axis] < lo or state[axis] > hi:
+                    state[axis + 3] = -state[axis + 3]
+                    state[axis] = np.clip(state[axis], lo, hi)
+            tgt.state = state
+        self.current_slot += 1
+
+    def get_process_noise_cov(self):
+        return self.Q_m.copy()
 
     def __repr__(self) -> str:
         return (

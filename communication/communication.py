@@ -27,7 +27,8 @@ class CommunicationManager:
  
         self.noise_psd = float(sys_config["noise_psd_dbm_hz"])
         self.noise_fig = float(sys_config["noise_figure_db"])
-        self.noise_power_ue = float(sys_config["noise_power_per_prb_watt"])
+        self.noise_power_ue = (float(sys_config["noise_power_per_prb_watt"])
+                               * 2.0 ** np.asarray(self.bwp))
 
     def compute_sinr(self, X_c, comm_gain, inter_bs_interf=None):
         """
@@ -48,7 +49,7 @@ class CommunicationManager:
 
         # Signal power p_bw * G_c
         signal_power = (X_c * comm_gain * p_prb)
-        denominator = (self.noise_power_ue + inter_bs_interf)
+        denominator = (self.noise_power_ue[None, :, None, None, None] + inter_bs_interf)
         comm_sinr = np.where(X_c > 0, signal_power / np.maximum(denominator, 1e-16), 0.0).astype(np.float32)
         spectral_eff = np.log2(1.0 + np.maximum(comm_sinr, 0.0)).astype(np.float32)
 

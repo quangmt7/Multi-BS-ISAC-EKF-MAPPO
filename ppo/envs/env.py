@@ -279,8 +279,8 @@ class BaseISACEnv(ABC):
             X_c=x_c, X_s=x_s, bs_pos=self.bs_positions, ue_pos=self.ue_positions,
             target_pos=self.target_states[:, :3], pred_target_pos=self.pred_target_states[:, :3])
         comm = self.comm_managers[0]
-        self.sinr_comm, spectral_eff = comm.compute_sinr(
-            x_c, channel_out["comm_gain"], channel_out["comm_interference"])
+        self.sinr_comm = channel_out["comm_sinr_prb"].copy()
+        spectral_eff = np.log2(1.0 + np.maximum(self.sinr_comm, 0.0))
         self.X_c, self.X_s = x_c.copy(), x_s.copy()
         self.served_ues = x_c.any(axis=(0, 1, 4))
         self.sinr_sensing_prb = channel_out["sensing_sinr_prb"].copy()
