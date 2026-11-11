@@ -10,7 +10,8 @@ class WirelessChannel:
          sim_config = sys_config.get("simulation")
          self.bwp = sys_config["bwp"]
          self.num_targets = sys_config["num_target"]
-         self.n_prb = sys_config["num_prb_bs"]
+         self.nPrb = sys_config["nPrb"]
+         self.maxPrb = max(self.nPrb)
          self.prbBW = sys_config["prbBW"]
          self.shadowing = float(channel_config["shadowing_std_db"])
          
@@ -52,28 +53,29 @@ class WirelessChannel:
         # c2s_matrix[w_tx,r_tx,w_rx,r_rx]
         # represents spectral leakage from communication PRB (w_tx,r_tx) to sensing PRB (w_rx,r_rx).
          num_bwp = len(self.fStart)
-
-         prb_freq = np.zeros((num_bwp, self.n_prb), dtype=np.float32)
+         valid_prb = np.zeros((num_bwp, self.maxPrb), dtype=np.float32)
 
          for w in range(num_bwp):
+            valid_prb[w, :self.nPrb[w]] = 1.0
+         valid_pair = (valid_prb[:, :, None, None] * valid_prb[None, None, :, :])
+         prb_freq = np.zeros((num_bwp, self.maxPrb), dtype=np.float32)
 
-            # Numerology of BWP w. Delta_f_w = 15 * 2^w kHz
+         for w in range(num_bwp):
             delta_f_w = 15e3 * (2 ** self.bwp[w])
-            prb_idx = np.arange(self.n_prb, dtype=np.float32)
+            prb_idx = np.arange(self.nPrb[w], dtype=np.float32)
+            prb_freq[w, :self.nPrb[w]] = (self.fStart[w] + 12.0 * delta_f_w * (prb_idx + 0.5))
 
-            # f_{w,r} Center frequency of PRB r in BWP w.
-            prb_freq[w] = (self.fStart[w] + 12.0 * delta_f_w * (prb_idx + 0.5))
+         freq_tx = prb_freq[:, :, None, None]
+         freq_rx = prb_freq[None, None, :, :]
 
-            # sigma_f = k * B
-            sigma_f = (self.oleF * self.prbBW * 2**w)
+         delta_freq = np.abs(freq_tx - freq_rx)
 
-            freq_tx = prb_freq[:, :, None, None]
-            freq_rx = prb_freq[None, None, :, :]
+         prb_bw_w = (self.prbBW * (2 ** np.asarray(self.bwp, dtype=np.float32)))
 
-            delta_freq = np.abs(freq_tx - freq_rx)
+         sigma_f = (self.oleF * prb_bw_w)
+         sigma_f = sigma_f[:, None, None, None]
 
-            self.c2s_matrix = np.exp(-(delta_freq ** 2) / (2.0 * sigma_f ** 2)).astype(np.float32)
-
+         self.c2s_matrix = (np.exp(-(delta_freq ** 2) / (2.0 * sigma_f ** 2)) * valid_pair).astype(np.float32)
         #rng
          seed = sim_config.get("seed", self.config.get("seed", 42))
          self.rng = np.random.default_rng(seed)
@@ -223,12 +225,11 @@ class WirelessChannel:
         return sensing_gain.astype(np.float32)
 
  
-    def compute_c2s_interference(self, X_c, comm_gain):
+    def compute_c2s_interference(self, X_c):
         """
         Compute communication-to-sensing leakage.
         Parameters
             X_c : (np.ndarray, [B,W,S,U,R]) Communication allocation.
-            comm_gain : (np.ndarray, [B,W,S,U,R]) Communication channel gain.
         Returns
             c2s_interf : (np.ndarray, [B,W,M,R]) Communication leakage seen by sensing receivers.
         """
@@ -237,7 +238,8 @@ class WirelessChannel:
 
         # Communication transmit power, shape [B,W,S,U,R]
         p_prb = np.asarray(self.pEach, dtype=np.float32)[None,:,None,None,None]
-        comm_power = (X_c * comm_gain * p_prb)
+        # Delete the comm_gain here, the gain from Tx communication -> Rx receiver
+        comm_power = (X_c * self.c2s_eta0 * p_prb)
 
         # Sum over slice and UE, shape [B,W,R]
         comm_power = np.sum(comm_power, axis=(2,3))
@@ -263,7 +265,7 @@ class WirelessChannel:
         p_radar = (X_s * np.asarray(self.pEach, dtype=np.float32)[None,:,None,None])
 
         # Aggregate all BWPs and targets, shape: [B,R]
-        p_bs = np.sum(p_radar, axis=(1,2))
+        p_bs = np.sum(p_radar, axis=2)
         bs_position = np.asarray(bs_position, dtype=np.float32)
         B = p_bs.shape[0]
         
@@ -281,8 +283,9 @@ class WirelessChannel:
         path_gain *= self.ibi_eta
 
         # Sum interference from all BSs.
-        ibi_interf = (path_gain.T @ p_bs)
-        return ibi_interf[:,None,:].astype(np.float32)
+        ibi_interf = np.einsum("ij,jwr->iwr", path_gain, p_bs)
+        ibi_interf = ibi_interf[:,:,None,:]
+        return ibi_interf.astype(np.float32)
 
  
     def get_sensing_sinr(self, X_s, X_c, bs_pos, target_pos, pred_target_pos=None, comm_gain=None):
@@ -300,6 +303,9 @@ class WirelessChannel:
             sensing_sinr_prb : (np.ndarray, [B,W,M,R])    
         """
         sensing_gain = self.get_sensing_channel_gain(bs_pos, target_pos, pred_target_pos)
+        noise_power_w = (self.noise_power * (2.0 ** np.asarray(self.bwp)))
+
+        noise_power_w = (noise_power_w[None,:,None,None])
 
         p_prb = np.asarray(self.pEach, dtype=np.float32)[None, :, None, None]
 
@@ -307,11 +313,11 @@ class WirelessChannel:
         signal_power = (X_s * sensing_gain * p_prb)
 
         # Communication leakage, shape [B,W,M,R]
-        c2s_interf = self.compute_c2s_interference(X_c, comm_gain)
+        c2s_interf = self.compute_c2s_interference(X_c)
 
         # Inter-BS interference, shape [B,W,M,R]
         ibi_interf = self.compute_ibi_interference(X_s, bs_pos)
-        total_interf = (self.noise_power + c2s_interf + ibi_interf)
+        total_interf = (noise_power_w + c2s_interf + ibi_interf)
 
         sensing_sinr_prb = np.where(X_s > 0, signal_power / np.maximum(total_interf, 1e-16), 0.0).astype(np.float32)
         

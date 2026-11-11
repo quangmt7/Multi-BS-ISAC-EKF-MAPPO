@@ -15,11 +15,10 @@ system_parameters:
   # Băng tần 5G NR FR1 (Sub-6 GHz, ví dụ băng n78 3.5 GHz)
   # SCS = 30 kHz (Numerology mu = 1), 1 PRB = 12 subcarriers * 30 kHz = 360 kHz
   # ----------------------------------------------------------------------------
-  bandwidth_mhz_bs: 20.0                 # Băng thông mỗi BS: 20.0 MHz
   bwp: [1,2]                           # BWP được dùng
-  nPrb: [51,51]                        # Số PRB mỗi BWP
+  nPrb: [30,30]                        # Số PRB mỗi BWP
   pEach: [5,5]                         # Công suất mỗi PRB của BWP
-  fStart: [0, 10]                      # Tần số trung tâm tại PRB đầu tiên (kHz) (tham chiếu thôi nhé, không cần chính xác đâu)
+  fStart: [0, 11]                      # Tần số trung tâm tại PRB đầu tiên (kHz) (tham chiếu thôi nhé, không cần chính xác đâu)
   oleF: 1                              # Hệ số suy giảm theo tần số
   carrier_frequency_ghz: 3.5           # Tần số sóng mang trung tâm f_c = 3.5 GHz
   prbBW: 180.0                         # Khoảng cách của PRB = 180.0 kHz
