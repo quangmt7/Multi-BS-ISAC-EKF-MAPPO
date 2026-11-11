@@ -60,14 +60,13 @@ class WirelessChannel:
          for w in range(num_bwp):
             delta_f_w = 15e3 * (2 ** self.bwp[w])
             prb_freq[w] = self.fStart[w] * 1e3 + 12.0 * delta_f_w * (np.arange(self.max_prb) + 0.5)
-         # All frequencies and receiver bandwidths use Hz, including non-consecutive mu.
+         # Leakage width follows the transmitting BWP; all frequencies use Hz.
          sigma_f = self.oleF * self.prbBW * 1e3 * 2.0 ** np.asarray(self.bwp)
          if np.any(sigma_f <= 0):
              raise ValueError("oleF and prbBW must be positive")
          delta_freq = prb_freq[:, :, None, None] - prb_freq[None, None, :, :]
-         self.c2s_matrix = np.exp(-delta_freq**2 / (2.0 * sigma_f[None, None, :, None]**2))
+         self.c2s_matrix = np.exp(-delta_freq**2 / (2.0 * sigma_f[:, None, None, None]**2))
          self.c2s_matrix *= self.prb_mask[:, :, None, None] * self.prb_mask[None, None, :, :]
-
         #rng
          seed = sim_config.get("seed", self.config.get("seed", 42))
          self.rng = np.random.default_rng(seed)
@@ -219,12 +218,11 @@ class WirelessChannel:
         return sensing_gain.astype(np.float32)
 
  
-    def compute_c2s_interference(self, X_c, comm_gain):
+    def compute_c2s_interference(self, X_c):
         """
         Compute communication-to-sensing leakage.
         Parameters
             X_c : (np.ndarray, [B,W,S,U,R]) Communication allocation.
-            comm_gain : (np.ndarray, [B,W,S,U,R]) Communication channel gain.
         Returns
             c2s_interf : (np.ndarray, [B,W,M,R]) Communication leakage seen by sensing receivers.
         """
@@ -233,7 +231,8 @@ class WirelessChannel:
 
         # Communication transmit power, shape [B,W,S,U,R]
         p_prb = np.asarray(self.pEach, dtype=np.float32)[None,:,None,None,None]
-        comm_power = (X_c * comm_gain * p_prb)
+        # Residual coupling into the radar receiver, independent of BS-to-UE gain.
+        comm_power = (X_c * self.c2s_eta0 * p_prb)
 
         # Sum over slice and UE, shape [B,W,R]
         comm_power = np.sum(comm_power, axis=(2,3))
@@ -279,11 +278,11 @@ class WirelessChannel:
         path_gain *= self.ibi_eta
 
         # Sum interference from all BSs.
-        ibi_interf = np.einsum("ij,iwr->jwr", path_gain, p_bs)
+        ibi_interf = np.einsum("ij,jwr->iwr", path_gain, p_bs)
         return ibi_interf[:, :, None, :].astype(np.float32)
 
  
-    def get_sensing_sinr(self, X_s, X_c, bs_pos, target_pos, pred_target_pos=None, comm_gain=None, sensing_gain=None):
+    def get_sensing_sinr(self, X_s, X_c, bs_pos, target_pos, pred_target_pos=None, sensing_gain=None):
         """
         Compute sensing SINR.
         Parameters
@@ -292,15 +291,15 @@ class WirelessChannel:
             bs_pos : (np.ndarray, [B,3])
             target_pos : (np.ndarray, [M,3])
             pred_target_pos : (np.ndarray | None, [M,3])
-            comm_gain : (np.ndarray | None, [B,W,S,U,R]) Precomputed communication gain, reused for C2S computation.
+            sensing_gain : (np.ndarray | None, [B,W,M,R]) Precomputed echo gain.
         Returns
             effective_sensing_sinr : (np.ndarray, [B,M])
             sensing_sinr_prb : (np.ndarray, [B,W,M,R])    
         """
         if sensing_gain is None:
             sensing_gain = self.get_sensing_channel_gain(bs_pos, target_pos, pred_target_pos)
-        if X_c is not None and comm_gain is None:
-            raise ValueError("comm_gain is required when X_c is provided")
+        noise_power_w = (self.noise_power * (2.0 ** np.asarray(self.bwp)))
+        noise_power_w = (noise_power_w[None,:,None,None])
 
         p_prb = np.asarray(self.pEach, dtype=np.float32)[None, :, None, None]
 
@@ -308,11 +307,11 @@ class WirelessChannel:
         signal_power = (X_s * sensing_gain * p_prb)
 
         # Communication leakage, shape [B,W,M,R]
-        c2s_interf = self.compute_c2s_interference(X_c, comm_gain)
+        c2s_interf = self.compute_c2s_interference(X_c)
 
         # Inter-BS interference, shape [B,W,M,R]
         ibi_interf = self.compute_ibi_interference(X_s, bs_pos, X_c=X_c)
-        total_interf = (self.noise_power + c2s_interf + ibi_interf)
+        total_interf = (noise_power_w + c2s_interf + ibi_interf)
 
         sensing_sinr_prb = np.where(X_s > 0, signal_power / np.maximum(total_interf, 1e-16), 0.0).astype(np.float32)
         
@@ -376,7 +375,6 @@ class WirelessChannel:
                 bs_pos=bs_pos,
                 target_pos=target_pos,
                 pred_target_pos=pred_target_pos,
-                comm_gain=comm_gain,
                 sensing_gain=sensing_gain,
             )
         )

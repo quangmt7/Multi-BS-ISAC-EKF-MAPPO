@@ -15,7 +15,6 @@ system_parameters:
   # Băng tần 5G NR FR1 (Sub-6 GHz, ví dụ băng n78 3.5 GHz)
   # SCS = 30 kHz (Numerology mu = 1), 1 PRB = 12 subcarriers * 30 kHz = 360 kHz
   # ----------------------------------------------------------------------------
-  bandwidth_mhz_bs: 20.0               # Băng thông tham khảo (MHz); không giới hạn tổng băng thông
   bwp: [1,2]                           # BWP được dùng
   nPrb: [30,30]                        # Số PRB của từng BWP
   pEach: [5,5]                         # Công suất cố định mỗi PRB (mW); PHY đổi sang W
