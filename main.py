@@ -1,7 +1,6 @@
 from ppo.train import parse_args
 from ppo.utils.mappo_trainer import MAPPOTrainer
 from ppo.utils.project_config import ProjectConfig
-from ppo.utils.result_artifacts import ResultArtifacts
 
 
 def main() -> None:
@@ -13,9 +12,10 @@ def main() -> None:
     Return:
         (None).
     """
-    # For common EKF first
     args = parse_args()
     if args.figures_only:
+        from ppo.utils.result_artifacts import ResultArtifacts
+
         paths = ResultArtifacts(args.output_dir).render_existing()
         print(f"Created {len(paths)} figures in {args.output_dir / 'figures'}")
         return
@@ -25,7 +25,7 @@ def main() -> None:
         output_dir=args.output_dir,
         resume_from=args.resume,
     )
-    trainer.run(True)
+    trainer.run(bwp_mode=True)
 
 
 if __name__ == "__main__":

@@ -20,7 +20,7 @@ mappo_parameters:
   # 2. Không gian hành động lai (Hybrid Action Space)
 
   action_space:
-    power_action_type: "continuous"    # Công suất liên tục (Squashed Gaussian / Beta distribution)
+    power_action_type: "continuous"    # Legacy Actor; Thuận cần đổi policy/buffer sang PRB-only trước training. Env dùng pEach cố định.
     power_min_watt: 0.0                # Công suất phát tối thiểu trên mỗi PRB (W)
 
   # ----------------------------------------------------------------------------
@@ -44,8 +44,9 @@ mappo_parameters:
 
   # ----------------------------------------------------------------------------
   # 4. Trọng số hàm mục tiêu tối ưu (Objective Weights)
-  #   R_obj = - alpha * (A_bar / A_max) - beta * (U_pos / U_pos_max + U_vel / U_vel_max) - gamma * (P_used / P_max)
-  #   với alpha, beta, gamma >= 0 và alpha + beta + gamma = 1.0 
+  # Reward tạm hiện tại giữ tên hệ số cũ: alpha*sensing + gamma*comm
+  # + (1-alpha-gamma)*(4-sum(normalized_cost)); beta trộn các thành phần sensing.
+  # Công thức/hệ số mới theo formulation còn chờ anh Tiến chốt.
   # ----------------------------------------------------------------------------
   reward_weights:
     alpha_aoi: 0.25                     # alpha = 0.4: Trọng số của Age of Information (AoI)
@@ -79,9 +80,6 @@ mappo_parameters:
     c4_vel_uncertainty: 0.1            # c4 = 0.1: Phạt khi bất định vận tốc EKF vượt ngưỡng: U_vel > U_vel_max
     c5_sens_freq: 0.2                  # c5 = 0.2: Phạt khi sensing quá thường xuyên mà không cần thiết
     #pero_max: 0.1                      # pero_max = 0.1: Ngưỡng tỷ lệ dùng PRB để phạt nếu vượt, phục vụ phạt c5 
-    penalty_rate_qos: 0.2              # Alias tương thích ngược
-    penalty_sensing_reliability: 0.2   # Alias tương thích ngược
-    penalty_uncertainty: 0.2           # Alias tương thích ngược
     penalty_power_budget: 0.5          # Phạt khi tổng công suất BS vượt P_b^max (ràng buộc vật lý)
     aoi_thr: 5                         # Ngưỡng aoi (cao hơn thì phải sensing, thấp hơn thì khuyến khích không sensing)
     delta_u_pos: 20                    # Ngưỡng chênh lệch pos uncertainty (m)

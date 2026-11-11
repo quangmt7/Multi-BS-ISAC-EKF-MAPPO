@@ -36,7 +36,7 @@ class PPOISACEnv(BaseISACEnv):
 
         # 4. Residual resources: [B] and [B]
         p_res_norm = np.clip(self.p_res / self.p_max, 0.0, 1.0).astype(np.float32)
-        n_res_norm = np.clip(self.n_res / self.n_prb, 0.0, 1.0).astype(np.float32)
+        n_res_norm = np.clip(self.n_res / self.total_prb, 0.0, 1.0).astype(np.float32)
 
         global_state = np.concatenate([
             u_pos_norm,     # [M]

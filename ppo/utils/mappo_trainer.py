@@ -12,7 +12,6 @@ import torch
 
 from ppo.utils.checkpoint_manager import CheckpointManager
 from ppo.utils.project_config import ProjectConfig
-from ppo.utils.result_artifacts import ResultArtifacts
 from ppo.utils.runtime_contract import RuntimeContract
 
 
@@ -66,7 +65,7 @@ class MAPPOTrainer:
         self.resume_from = Path(resume_from) if resume_from is not None else None
         self._owns_environment = env is None
 
-    def run(self, sepBS) -> list[dict[str, Any]]:
+    def run(self, bwp_mode=True) -> list[dict[str, Any]]:
         """Run training and return metrics produced in this process.
 
         Argument:
@@ -85,7 +84,7 @@ class MAPPOTrainer:
         seed = int(training.get("seed", 0))
 
         self._seed_everything(seed)
-        self.env = self.env if self.env is not None else self._create_environment(sepBS)
+        self.env = self.env if self.env is not None else self._create_environment(bwp_mode)
 
         try:
             initial_local_obs, initial_global_state = self._reset_environment(seed)
@@ -93,8 +92,18 @@ class MAPPOTrainer:
                 initial_local_obs, initial_global_state
             )
             self._create_missing_agent_components(local_obs_dim, global_state_dim)
+            # The legacy Actor still scores a learned power action. Silently
+            # discarding it would train a policy different from the new model.
+            from ppo.envs.env import BaseISACEnv
+            if isinstance(self.env, BaseISACEnv) and hasattr(getattr(self.agent, "actornetwork", None), "power_mean"):
+                raise RuntimeError(
+                    "The Env uses fixed pEach power. Migrate the PPO Actor/log-probability "
+                    "and rollout contract to PRB-only actions before training (state/trainer task)."
+                )
             self.contract.agent_structure(self.agent, local_obs_dim, global_state_dim)
             self.contract.finite_agent_parameters(self.agent)
+
+            from ppo.utils.result_artifacts import ResultArtifacts
 
             self.output_dir.mkdir(parents=True, exist_ok=True)
             artifacts = ResultArtifacts(self.output_dir)
@@ -141,7 +150,7 @@ class MAPPOTrainer:
                         )
                         actions_prb, actions_pwr, log_probs, value = policy_output
                         transition = self.contract.step_result(
-                            self.env.step(actions_prb, actions_pwr),
+                            self.env.step(actions_prb),
                             local_obs_dim,
                             global_state_dim,
                         )
@@ -227,7 +236,7 @@ class MAPPOTrainer:
             if self._owns_environment and callable(getattr(self.env, "close", None)):
                 self.env.close()
 
-    def _create_environment(self, sepBS) -> Any:
+    def _create_environment(self, bwp_mode=True) -> Any:
         """Create the integrated ISAC environment.
 
         Argument:
@@ -238,14 +247,14 @@ class MAPPOTrainer:
         """
 
         try:
-            from ppo.envs.env import MultiISACEnv
+            from ppo.envs.PPOenv import PPOISACEnv
         except (ImportError, ModuleNotFoundError, SyntaxError) as exc:
             raise RuntimeError(
                 "ppo.env or one of its physical-model dependencies is not ready. "
                 "Integrate scenario, channel, sensing and communication before "
                 "starting real training."
             ) from exc
-        return MultiISACEnv(self.config, sepBS)
+        return PPOISACEnv(self.config, bwp_mode=bwp_mode)
 
     def _create_missing_agent_components(
         self, local_obs_dim: int, global_state_dim: int
@@ -263,7 +272,8 @@ class MAPPOTrainer:
         if self.agent is not None and self.buffer_factory is not None:
             return
         try:
-            from ppo.agents.agent import MAPPOAgent, MultiAgentRolloutBuffer
+            from ppo.agents.PPOagent import MAPPOAgent
+            from ppo.agents.AgentComponents import MultiAgentRolloutBuffer
         except (ImportError, ModuleNotFoundError) as exc:
             raise RuntimeError(
                 "ppo.agent is unavailable on this branch. Merge the reviewed "
