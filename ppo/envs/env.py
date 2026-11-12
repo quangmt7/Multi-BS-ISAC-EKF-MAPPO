@@ -366,6 +366,8 @@ class BaseISACEnv(ABC):
         pos_error = np.linalg.norm(posterior[:, :3] - self.target_states[:, :3], axis=1)
         vel_error = np.linalg.norm(posterior[:, 3:] - self.target_states[:, 3:], axis=1)
         lost = bool(np.mean(u_pos > self.u_pos_max) > .5 or np.mean(u_vel > self.u_vel_max) > .5)
+        embb_qos = self.qos_served_ues[:self.num_embb][self.ue_mask[:self.num_embb]]
+        urllc_qos = self.qos_served_ues[self.num_embb:][self.ue_mask[self.num_embb:]]
         info = {
             "step": self.current_step, "time_seconds": self.current_step * self.slot_duration,
             "target_pos_mean_m": float(np.mean(np.linalg.norm(self.target_states[:, :3], axis=1))),
@@ -374,10 +376,9 @@ class BaseISACEnv(ABC):
             "aoi_mean": float(np.mean(self.aoi)), "u_pos_mean": float(np.mean(u_pos)),
             "u_vel_mean": float(np.mean(u_vel)), "lost_target": lost,
             "num_served_ues": float(np.count_nonzero(x_c.sum(axis=(0, 1, 4))[self.ue_mask])),
-            "num_qos_served_ues": float(np.count_nonzero(self.qos_served_ues)),
-            "num_qos_ues": float(np.sum(self.eMBB_Thr >= self.r_min * 1e6) + np.sum(latency_ms <= self.max_ue_delay)),
-            "qos_eMBB_rate": float(np.mean(self.eMBB_Thr >= self.r_min * 1e6)),
-            "qos_URLLC_rate": float(np.mean(latency_ms <= self.max_ue_delay)),
+            "num_qos_ues": float(np.count_nonzero(self.qos_served_ues)),
+            "qos_eMBB_rate": float(embb_qos.mean()) if embb_qos.size else 0.,
+            "qos_URLLC_rate": float(urllc_qos.mean()) if urllc_qos.size else 0.,
             "mean_embb_rate_mbps": float(np.mean(self.eMBB_Thr) / 1e6),
             "comm_rate_mean_mbps": float((self.eMBB_Thr.sum() + current_bits.sum() / self.slot_duration) / (self.num_ue * 1e6)),
             "qos_satisfaction_rate": float((np.sum(self.eMBB_Thr >= self.r_min * 1e6) + np.sum(latency_ms <= self.max_ue_delay)) / self.num_ue),
