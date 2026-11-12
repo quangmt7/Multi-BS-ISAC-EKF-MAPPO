@@ -10,9 +10,9 @@ class HierISACEnv(BaseISACEnv):
         return result
 
     def begin_frame(self, ratios, num_subframes=None):
-        """Normalize SAC ratios per BS, floor PRB quotas; hold caps for this frame.
+        """Apportion each BWP by largest remainder; hold integer caps for the frame.
 
-        ratios: [B,W,S+M], slices before targets. Frame length defaults to
+        ratios: [B,W,M+S], targets before slices. Frame length defaults to
         simulation.num_subframes_per_frame; no episode or dynamics reset.
         """
         if not self._has_reset:
@@ -25,15 +25,21 @@ class HierISACEnv(BaseISACEnv):
             raise ValueError("num_subframes must be a positive integer")
         ratios = np.asarray(ratios, dtype=float)
         if ratios.shape != self.BWP_slice.shape or not np.isfinite(ratios).all() or np.any(ratios < 0):
-            raise ValueError("SAC ratios must be finite non-negative [B,W,S+M]")
+            raise ValueError("SAC ratios must be finite non-negative [B,W,M+S]")
         if not self.bwp_mode and np.any(np.count_nonzero(ratios, axis=1) > 1):
             raise ValueError("single-BWP SAC ratios must select at most one BWP per service")
         # Scale first to avoid overflow when summing large valid ratios.
-        scale = ratios.max(axis=(1, 2), keepdims=True)
+        scale = ratios.max(axis=2, keepdims=True)
         scaled = np.divide(ratios, scale, out=np.zeros_like(ratios), where=scale > 0)
-        total = scaled.sum(axis=(1, 2), keepdims=True)
+        total = scaled.sum(axis=2, keepdims=True)
         self.frame_ratios = np.divide(scaled, total, out=np.zeros_like(ratios), where=total > 0)
-        quota = np.floor(self.frame_ratios * np.asarray(self.nPrb)[None, :, None]).astype(np.int64)
+        ideal = self.frame_ratios * np.asarray(self.nPrb)[None, :, None]
+        quota = np.floor(ideal).astype(np.int64)
+        remaining = np.where(total[:, :, 0] > 0, np.asarray(self.nPrb)[None, :] - quota.sum(axis=2), 0)
+        # Stable ties follow target/slice column order; zero-weight rows stay idle.
+        order = np.argsort(-(ideal - quota), axis=2, kind="stable")
+        rank = np.argsort(order, axis=2)
+        quota += rank < remaining[:, :, None]
         self.set_budget(quota)
         self._frame_length = int(num_subframes)
         self._uses_frames = True
@@ -59,7 +65,9 @@ class HierISACEnv(BaseISACEnv):
         self._frame_u_pos += up
         self._frame_u_vel += uv
         counts = self.ue_mask.sum(axis=1)
-        self._frame_service += self.served_ues.sum(axis=1) / counts
+        self._frame_service += np.divide(
+            self.qos_served_ues.sum(axis=1), counts,
+            out=np.zeros(self.num_slices, dtype=float), where=counts > 0)
         info = result[-1]
         info["frame_complete"] = False
         if self._frame_steps == self._frame_length or result[3] or result[4]:

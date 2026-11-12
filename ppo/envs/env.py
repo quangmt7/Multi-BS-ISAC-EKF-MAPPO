@@ -19,6 +19,7 @@ class BaseISACEnv(ABC):
     [B,sum(nPrb)] in BWP order. 0=idle, 1..M=target, M+1..M+K=global UE.
     Scenario.ues defines the global UE order; padded UEs have no destination.
     pEach is configured in mW; internal power/energy use W/J.
+    BWP_slice, budgets and SAC ratio columns store targets before slices.
     cost_max, when supplied, contains GLOBAL per-step bounds in the order
     energy, switching, guardband.
     """
@@ -103,7 +104,7 @@ class BaseISACEnv(ABC):
         self.URLLC_Latency = np.zeros_like(self.numBit)
         self.eMBB_Thr = np.zeros((self.num_embb, self.num_ue_1embb), dtype=float)
         self.BWP_slice = np.zeros((self.num_bs, len(self.bwp),
-                                   self.num_slices + self.num_targets), dtype=np.int8)
+                                   self.num_targets + self.num_slices), dtype=np.int8)
         self.last_BWP_slice = np.zeros_like(self.BWP_slice)
         # Loose upper bounds, all at the same (global, per-step) aggregation level.
         frequency_order = np.argsort(sys_config["fStart"], kind="stable")
@@ -162,6 +163,7 @@ class BaseISACEnv(ABC):
         self.X_c = np.zeros((self.num_bs, len(self.bwp), self.num_slices, self.ue_mask.shape[1], self.max_prb))
         self.X_s = np.zeros((self.num_bs, len(self.bwp), self.num_targets, self.max_prb))
         self.served_ues = np.zeros(self.ue_mask.shape, dtype=bool)
+        self.qos_served_ues = np.zeros(self.ue_mask.shape, dtype=bool)
         self.sinr_comm = np.zeros_like(self.X_c)
         self.sinr_sensing_prb = np.zeros_like(self.X_s)
         self.se_comm_mean = np.zeros((self.num_bs, *self.ue_mask.shape))
@@ -186,9 +188,9 @@ class BaseISACEnv(ABC):
         return np.asarray(true_states) + errors
 
     def set_budget(self, budget):
-        """Set integer per-step PRB caps [B,W,S+M]; None removes caps.
+        """Set integer per-step PRB caps [B,W,M+S]; None removes caps.
 
-        Slice columns precede target columns. The upper-level trainer owns
+        Target columns precede communication slice columns. The upper-level trainer owns
         frame duration, fractional-to-integer conversion and when caps change.
         Invalid actions are rejected, never silently projected to another policy action.
         """
@@ -199,7 +201,7 @@ class BaseISACEnv(ABC):
         if (budget.shape != self.BWP_slice.shape or
                 not np.issubdtype(budget.dtype, np.integer) or np.any(budget < 0)
                 or np.any(budget.sum(axis=2) > np.asarray(self.nPrb)[None, :])):
-            raise ValueError("budget must be integer [B,W,S+M], with each BWP total <= nPrb")
+            raise ValueError("budget must be integer [B,W,M+S], with each BWP total <= nPrb")
         if not self.bwp_mode and np.any(np.count_nonzero(budget, axis=1) > 1):
             raise ValueError("single-BWP permits at most one BWP per BS and slice/target")
         self.budget = budget.copy()
@@ -232,7 +234,7 @@ class BaseISACEnv(ABC):
             x_s[:, :, m, :] = actions == m + 1
         for k, (s, u) in enumerate(self.ue_indices):
             x_c[:, :, s, u, :] = actions == self.num_targets + k + 1
-        counts = np.concatenate((x_c.sum(axis=(3, 4)), x_s.sum(axis=3)), axis=2)
+        counts = np.concatenate((x_s.sum(axis=3), x_c.sum(axis=(3, 4))), axis=2)
         if not self.bwp_mode and np.any(np.count_nonzero(counts, axis=1) > 1):
             raise ValueError("single-BWP permits at most one BWP per BS and slice/target")
         if self.budget is not None and np.any(counts > self.budget):
@@ -261,7 +263,8 @@ class BaseISACEnv(ABC):
         """DQN-style team reward. Scheduling indicator differs from QoS success."""
         normalized_cost = np.divide(cost, self.cost_max, out=np.zeros_like(self.cost_max), where=self.cost_max > 0)
         pi = np.asarray(self.served_ues, dtype=float)
-        reward, terms = self._reward_components(self.aoi, u_pos, u_vel, normalized_cost, [pi[self.ue_mask].mean()])
+        allocation_ratio = float(pi[self.ue_mask].sum() / self.ue_mask.sum()) if self.ue_mask.any() else 0.
+        reward, terms = self._reward_components(self.aoi, u_pos, u_vel, normalized_cost, [allocation_ratio])
         return reward, reward, 0., dict(terms, reward=reward, r_penalty=0.,
             norm_aoi=float(np.mean(self.aoi) / self.a_max), cost=np.asarray(cost).copy(),
             normalized_cost=normalized_cost, suc_embb=float(pi[:self.num_embb].sum() / (self.num_embb*self.num_ue_1embb)),
@@ -272,7 +275,7 @@ class BaseISACEnv(ABC):
         x_c, x_s = self.action_mapping(actions_prb)  # Validate before advancing time.
         self.current_step += 1
         self.last_BWP_slice = self.BWP_slice.copy()
-        self.BWP_slice = np.concatenate((x_c.any(axis=(3, 4)), x_s.any(axis=3)), axis=2).astype(np.int8)
+        self.BWP_slice = np.concatenate((x_s.any(axis=3), x_c.any(axis=(3, 4))), axis=2).astype(np.int8)
         self.scenario.step_targets()
         self.target_states = self.scenario.get_target_states()
         for m in range(self.num_targets):
@@ -312,6 +315,11 @@ class BaseISACEnv(ABC):
         latency_ms = self.URLLC_Latency.copy()
         completed = self.numBit >= self.required_bits_urllc
         completed_latency = np.where(completed, latency_ms, np.nan)
+        # Frame service requires QoS, not merely a scheduled PRB.
+        self.qos_served_ues.fill(False)
+        self.qos_served_ues[:self.num_embb, :self.num_ue_1embb] = self.eMBB_Thr >= self.r_min * 1e6
+        self.qos_served_ues[self.num_embb:, :self.num_ue_1urllc] = completed & (latency_ms <= self.max_ue_delay)
+        self.qos_served_ues &= self.ue_mask
         urllc_scheduled = x_c[:, :, self.num_embb:, :self.num_ue_1urllc].any(axis=(0, 1, 4))
         required_bits_step = self.required_bits_urllc * self.slot_duration * 1000. / self.max_ue_delay
         self.numBit[completed] = 0.
@@ -350,7 +358,7 @@ class BaseISACEnv(ABC):
         local_rewards = np.array([self._reward_components(
             self.aoi, u_pos, u_vel,
             np.divide(row, self.cost_max_local, out=np.zeros_like(self.cost_max_local), where=self.cost_max_local > 0),
-            [self.served_ues[self.ue_mask].mean()])[0] for row in self.cost_by_bs])
+            [float(self.served_ues[self.ue_mask].mean()) if self.ue_mask.any() else 0.])[0] for row in self.cost_by_bs])
         self.aoi_norm.append(float(np.mean(self.aoi) / self.a_max))
         self.prb.append(float(x_s.sum() / (self.num_bs * self.total_prb)))
         self.power.append(float(np.sum(x_s * self.pEach[None, :, None, None]) / (self.num_bs * self.p_max)))
@@ -366,6 +374,7 @@ class BaseISACEnv(ABC):
             "aoi_mean": float(np.mean(self.aoi)), "u_pos_mean": float(np.mean(u_pos)),
             "u_vel_mean": float(np.mean(u_vel)), "lost_target": lost,
             "num_served_ues": float(np.count_nonzero(x_c.sum(axis=(0, 1, 4))[self.ue_mask])),
+            "num_qos_served_ues": float(np.count_nonzero(self.qos_served_ues)),
             "num_qos_ues": float(np.sum(self.eMBB_Thr >= self.r_min * 1e6) + np.sum(latency_ms <= self.max_ue_delay)),
             "qos_eMBB_rate": float(np.mean(self.eMBB_Thr >= self.r_min * 1e6)),
             "qos_URLLC_rate": float(np.mean(latency_ms <= self.max_ue_delay)),
@@ -422,10 +431,10 @@ class BaseISACEnv(ABC):
         return power * self.dt / self.pa_efficiency
 
     def _switching_by_bs(self):
-        # BWP_slice stores communication slices before sensing targets.
+        # BWP_slice stores sensing targets before communication slices.
         delta = np.abs(self.BWP_slice.astype(float) - self.last_BWP_slice)
-        return (self.cost_switch_c * delta[:, :, :self.num_slices].sum(axis=(1, 2))
-                + self.cost_switch_s * delta[:, :, self.num_slices:].sum(axis=(1, 2)))
+        return (self.cost_switch_s * delta[:, :, :self.num_targets].sum(axis=(1, 2))
+                + self.cost_switch_c * delta[:, :, self.num_targets:].sum(axis=(1, 2)))
 
     def _guardband_by_bs(self):
         guard = np.zeros(self.num_bs)
