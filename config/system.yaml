@@ -18,7 +18,6 @@ system_parameters:
   bwp: [1,2]                           # BWP được dùng
   nPrb: [30,30]                        # Số PRB của từng BWP
   pEach: [5,5]                         # Công suất cố định mỗi PRB (mW); PHY đổi sang W
-  cost_switch: 0.3                    # Kế thừa ORAN-Pro-eMbb-URLLC/config/cons.json
   cost_gb: 2                          # Hệ số eta trong ceil(eta * |mu_w - mu_w'|), cùng nguồn BWP
   urllc_packet_size_bits: 256          # Kích thước gói URLLC (bit)
   fStart: [0, 11]                     # kHz; Channel đổi sang Hz
@@ -36,6 +35,10 @@ system_parameters:
   noise_figure_db: 7.0                 # Hệ số tạp âm máy thu: NF = 7.0 dB
   noise_power_per_prb_dbm: -111.4      # Tạp âm trên 1 PRB: sigma^2 = -174 + 7 + 10*log10(360k) = -111.4 dBm
   noise_power_per_prb_watt: 7.24e-15   # sigma^2 trên 1 PRB dạng tuyến tính (Watt) = B_0 * N_0
+  cost_switch_c: 1.0                   # Chi phí mỗi lần đổi trạng thái BWP của slice
+  cost_switch_s: 1.0                   # Chi phí mỗi lần đổi trạng thái BWP của target
+  pa_eff: 1.0                          # Hiệu suất khuếch đại công suất, 0 < eta <= 1
+  dt: 0.001                           # Bước tính năng lượng (s), bằng slot_duration_ms / 1000
 
   # ----------------------------------------------------------------------------
   # 4. Kênh truyền, Beamforming và Can nhiễu

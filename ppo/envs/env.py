@@ -20,7 +20,7 @@ class BaseISACEnv(ABC):
     Scenario.ues defines the global UE order; padded UEs have no destination.
     pEach is configured in mW; internal power/energy use W/J.
     cost_max, when supplied, contains GLOBAL per-step bounds in the order
-    energy, switching, fragmentation, guardband.
+    energy, switching, guardband.
     """
 
     def __init__(self, config: dict, cost_max=None, bwp_mode=True):
@@ -49,7 +49,10 @@ class BaseISACEnv(ABC):
         self.prbBW = float(sys_config["prbBW"])  # config kHz
         self.slot_duration = float(sys_config["slot_duration_ms"]) / 1000.
         self.max_steps = sys_config["simulation"]["num_slots_per_episode"]
-        self.cost_switch = float(sys_config["cost_switch"])
+        self.cost_switch_c = float(sys_config["cost_switch_c"])
+        self.cost_switch_s = float(sys_config["cost_switch_s"])
+        self.pa_efficiency = float(sys_config["pa_eff"])
+        self.dt = float(sys_config["dt"])
         self.cost_gb = float(sys_config["cost_gb"])
         self.required_bits_urllc = float(sys_config["urllc_packet_size_bits"])
         self.r_min = float(req_config["min_ue_rate_mbps"])
@@ -103,18 +106,18 @@ class BaseISACEnv(ABC):
                                    self.num_slices + self.num_targets), dtype=np.int8)
         self.last_BWP_slice = np.zeros_like(self.BWP_slice)
         # Loose upper bounds, all at the same (global, per-step) aggregation level.
-        entities = self.num_slices + self.num_targets
-        guard_pair_sum = sum(np.ceil(self.cost_gb * abs(mu - other))
-                             for w, mu in enumerate(self.bwp) for other in self.bwp[w + 1:])
+        frequency_order = np.argsort(sys_config["fStart"], kind="stable")
+        self.adjacent_bwp_pairs = list(zip(frequency_order[:-1], frequency_order[1:]))
+        guard_pair_sum = sum(np.ceil(self.cost_gb * abs(self.bwp[w] - self.bwp[v]))
+                             for w, v in self.adjacent_bwp_pairs)
         self.cost_max_local = np.array([
-            self.p_max * self.slot_duration,
-            entities * len(self.bwp) * self.cost_switch,
-            entities * len(self.bwp)**2,
-            entities * guard_pair_sum], dtype=float)
+            self.p_max * self.dt / self.pa_efficiency,
+            len(self.bwp) * (self.num_slices * self.cost_switch_c + self.num_targets * self.cost_switch_s),
+            guard_pair_sum], dtype=float)
         self.cost_max = (self.cost_max_local * self.num_bs if cost_max is None
                          else np.asarray(cost_max, dtype=float).copy())
-        if self.cost_max.shape != (4,) or not np.isfinite(self.cost_max).all() or np.any(self.cost_max < 0):
-            raise ValueError("cost_max must contain four finite non-negative GLOBAL bounds")
+        if self.cost_max.shape != (3,) or not np.isfinite(self.cost_max).all() or np.any(self.cost_max < 0):
+            raise ValueError("cost_max must contain three finite non-negative GLOBAL bounds")
         if np.any((self.cost_max_local > 0) & (self.cost_max == 0)):
             raise ValueError("cost_max must be positive for each applicable cost component")
         self.budget = None
@@ -155,7 +158,7 @@ class BaseISACEnv(ABC):
         self.n_res = np.full(self.num_bs, self.total_prb, dtype=float)
         self.last_h_comm = np.zeros((self.num_bs, self.num_ue), dtype=float)
         self.last_h_sens = np.zeros((self.num_bs, self.num_targets), dtype=float)
-        self.cost_by_bs = np.zeros((self.num_bs, 4), dtype=float)
+        self.cost_by_bs = np.zeros((self.num_bs, self.cost_max.size), dtype=float)
         self.X_c = np.zeros((self.num_bs, len(self.bwp), self.num_slices, self.ue_mask.shape[1], self.max_prb))
         self.X_s = np.zeros((self.num_bs, len(self.bwp), self.num_targets, self.max_prb))
         self.served_ues = np.zeros(self.ue_mask.shape, dtype=bool)
@@ -247,7 +250,7 @@ class BaseISACEnv(ABC):
         sensing_uncertainty = float(reduce_targets(
             np.exp(-ku * np.asarray(u_pos) / self.u_pos_max)
             + np.exp(-ku * np.asarray(u_vel) / self.u_vel_max)))
-        r_cost = float(4 - np.asarray(normalized_cost).sum())
+        r_cost = float(3 - np.asarray(normalized_cost).sum())
         r_service = float(np.mean(1 - np.exp(-ks * np.asarray(service_ratios))))
         reward = float(self.alpha * sensing_aoi + self.beta * sensing_uncertainty
                        + self.gamma * r_cost + self.lambda_service * r_service)
@@ -256,7 +259,7 @@ class BaseISACEnv(ABC):
 
     def _compute_reward(self, user_rates, user_delay, cost, p_suc, u_pos, u_vel):
         """DQN-style team reward. Scheduling indicator differs from QoS success."""
-        normalized_cost = np.divide(cost, self.cost_max, out=np.zeros(4), where=self.cost_max > 0)
+        normalized_cost = np.divide(cost, self.cost_max, out=np.zeros_like(self.cost_max), where=self.cost_max > 0)
         pi = np.asarray(self.served_ues, dtype=float)
         reward, terms = self._reward_components(self.aoi, u_pos, u_vel, normalized_cost, [pi[self.ue_mask].mean()])
         return reward, reward, 0., dict(terms, reward=reward, r_penalty=0.,
@@ -346,7 +349,7 @@ class BaseISACEnv(ABC):
             self.eMBB_Thr, latency_ms, cost, self.prob_suc, u_pos, u_vel)
         local_rewards = np.array([self._reward_components(
             self.aoi, u_pos, u_vel,
-            np.divide(row, self.cost_max_local, out=np.zeros(4), where=self.cost_max_local > 0),
+            np.divide(row, self.cost_max_local, out=np.zeros_like(self.cost_max_local), where=self.cost_max_local > 0),
             [self.served_ues[self.ue_mask].mean()])[0] for row in self.cost_by_bs])
         self.aoi_norm.append(float(np.mean(self.aoi) / self.a_max))
         self.prb.append(float(x_s.sum() / (self.num_bs * self.total_prb)))
@@ -377,7 +380,7 @@ class BaseISACEnv(ABC):
             "urllc_service_constraint_satisfied": current_bits >= required_bits_step * urllc_scheduled,
             "sensing_success_prob_mean": float(np.mean(self.prob_suc)),
             "energy_cost": float(cost[0]), "switch_cost": float(cost[1]),
-            "fragmentation_cost": float(cost[2]), "guardband_cost": float(cost[3]),
+            "guardband_cost": float(cost[2]),
             "cost_by_bs": self.cost_by_bs.copy(), "local_rewards": local_rewards}
         info.update(reward_info)
         return (self._get_local_observations(), self._get_global_state(), reward,
@@ -411,30 +414,37 @@ class BaseISACEnv(ABC):
         return np.asarray(observations, dtype=np.float32)
 
     def _costs_by_bs(self, x_c, x_s):
-        energy = ((x_c.sum(axis=(2, 3, 4)) + x_s.sum(axis=(2, 3))) @ self.pEach) * self.slot_duration
-        switch = self.cost_switch * (self.BWP_slice * (1 - self.last_BWP_slice)).sum(axis=(1, 2))
-        frag = np.square(self.BWP_slice.sum(axis=1)).sum(axis=1)
-        guard = self._guardband_by_bs()
-        return np.column_stack((energy, switch, frag, guard))
+        return np.column_stack((self._energy_by_bs(x_c, x_s),
+                                self._switching_by_bs(), self._guardband_by_bs()))
+
+    def _energy_by_bs(self, x_c, x_s):
+        power = (x_c.sum(axis=(2, 3, 4)) + x_s.sum(axis=(2, 3))) @ self.pEach
+        return power * self.dt / self.pa_efficiency
+
+    def _switching_by_bs(self):
+        # BWP_slice stores communication slices before sensing targets.
+        delta = np.abs(self.BWP_slice.astype(float) - self.last_BWP_slice)
+        return (self.cost_switch_c * delta[:, :, :self.num_slices].sum(axis=(1, 2))
+                + self.cost_switch_s * delta[:, :, self.num_slices:].sum(axis=(1, 2)))
 
     def _guardband_by_bs(self):
         guard = np.zeros(self.num_bs)
-        for w, mu in enumerate(self.bwp):
-            for other in range(w + 1, len(self.bwp)):
-                guard += np.ceil(self.cost_gb * abs(mu - self.bwp[other])) * (
-                    self.BWP_slice[:, w] * self.BWP_slice[:, other]).sum(axis=1)
+        active = self.BWP_slice.any(axis=2)
+        for w, other in self.adjacent_bwp_pairs:
+            guard += (np.ceil(self.cost_gb * abs(self.bwp[w] - self.bwp[other]))
+                      * active[:, w] * active[:, other])
         return guard
 
-    def calculateEnergy(self, X_c, X_s):
-        return float(((X_c.sum(axis=(2, 3, 4)) + X_s.sum(axis=(2, 3))) @ self.pEach).sum() * self.slot_duration)
+    def compute_energy_cost(self, X_c, X_s):
+        """Total transmission energy in J, including power-amplifier efficiency."""
+        return float(self._energy_by_bs(X_c, X_s).sum())
 
-    def calculateSwitch(self):
-        return float(self.cost_switch * (self.BWP_slice * (1 - self.last_BWP_slice)).sum())
+    def compute_switching_cost(self):
+        """Charge both activation and deactivation for slices and targets."""
+        return float(self._switching_by_bs().sum())
 
-    def calculateFrag(self):
-        return float(np.square(self.BWP_slice.sum(axis=1)).sum())
-
-    def calculateGuardBand(self):
+    def compute_guardband_cost(self):
+        """Charge each active adjacent BWP pair once per BS."""
         return float(self._guardband_by_bs().sum())
 
     @abstractmethod

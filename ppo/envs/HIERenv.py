@@ -38,7 +38,7 @@ class HierISACEnv(BaseISACEnv):
         self._frame_length = int(num_subframes)
         self._uses_frames = True
         self._frame_steps = 0
-        self._frame_cost = np.zeros(4)
+        self._frame_cost = np.zeros_like(self.cost_max)
         self._frame_aoi = np.zeros(self.num_targets)
         self._frame_u_pos = np.zeros(self.num_targets)
         self._frame_u_vel = np.zeros(self.num_targets)
@@ -75,7 +75,7 @@ class HierISACEnv(BaseISACEnv):
         cost = self._frame_cost / n
         aoi, up, uv = self._frame_aoi / n, self._frame_u_pos / n, self._frame_u_vel / n
         delta = self._frame_service / n
-        normalized_cost = np.divide(cost, self.cost_max, out=np.zeros(4), where=self.cost_max > 0)
+        normalized_cost = np.divide(cost, self.cost_max, out=np.zeros_like(self.cost_max), where=self.cost_max > 0)
         reward, terms = self._reward_components(aoi, up, uv, normalized_cost, delta, frame=True)
         summary = dict(subframes=n, duration_seconds=n*self.slot_duration,
             cost_mean=cost.copy(), normalized_cost=normalized_cost.copy(),

@@ -153,12 +153,21 @@ class ProjectConfig:
             if (isinstance(value, bool) or not isinstance(value, (int, float))
                     or not np.isfinite(value) or value <= 0):
                 raise ValueError(f"system_parameters.{name} must be explicitly set and positive")
-        for name in ("cost_switch", "cost_gb"):
+        for name in ("cost_switch_c", "cost_switch_s", "cost_gb"):
             value = system.get(name)
             if (isinstance(value, bool) or not isinstance(value, (int, float))
                     or not np.isfinite(value) or value < 0):
                 raise ValueError(f"system_parameters.{name} must be finite and non-negative")
-        if not np.isclose(self.data["ekf_parameters"]["dt"], system["slot_duration_ms"] / 1000.):
+        for name in ("pa_eff", "dt"):
+            value = system.get(name)
+            if (isinstance(value, bool) or not isinstance(value, (int, float))
+                    or not np.isfinite(value) or value <= 0):
+                raise ValueError(f"system_parameters.{name} must be finite and positive")
+        if system["pa_eff"] > 1:
+            raise ValueError("system_parameters.pa_eff must not exceed 1")
+        if not np.isclose(system["dt"], system["slot_duration_ms"] / 1000., rtol=1e-10, atol=0):
+            raise ValueError("system_parameters.dt must match slot_duration_ms in seconds")
+        if not np.isclose(self.data["ekf_parameters"]["dt"], system["dt"], rtol=1e-10, atol=0):
             raise ValueError("ekf_parameters.dt must match slot_duration_ms in seconds")
         frame_steps = system.get("simulation", {}).get("num_subframes_per_frame")
         if isinstance(frame_steps, bool) or not isinstance(frame_steps, int) or frame_steps <= 0:

@@ -45,7 +45,7 @@ mappo_parameters:
   # ----------------------------------------------------------------------------
   # 4. Trọng số hàm mục tiêu tối ưu (Objective Weights)
   # alpha*f(AoI) + beta*(f(Upos)+f(Uvel))
-  # + gamma*(4-sum(normalized_cost)) + lambda*(1-f(service)).
+  # + gamma*(3-sum(normalized_cost)) + lambda*(1-f(service)).
   # Step: sum theo target; frame SAC: mean theo target/slice, cost là mean subframe.
   # ----------------------------------------------------------------------------
   reward_weights:
