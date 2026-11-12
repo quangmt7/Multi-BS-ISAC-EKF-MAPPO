@@ -259,7 +259,7 @@ class WirelessChannel:
             p_bs += X_c.sum(axis=(2, 3)) * np.asarray(self.pEach)[None, :, None]
         bs_position = np.asarray(bs_position, dtype=np.float32)
         B = p_bs.shape[0]
-        
+
         # Pairwise BS distance.
         delta = (bs_position[:,None,:]- bs_position[None,:,:])
         dist = np.linalg.norm(delta, axis=-1)
