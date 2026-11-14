@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import random
 from pathlib import Path
@@ -10,8 +11,10 @@ from typing import Any, Callable, Mapping
 import numpy as np
 import torch
 
+from ppo.envs.env import BaseISACEnv
 from ppo.utils.checkpoint_manager import CheckpointManager
 from ppo.utils.project_config import ProjectConfig
+from ppo.utils.result_artifacts import ResultArtifacts
 from ppo.utils.runtime_contract import RuntimeContract
 
 
@@ -39,6 +42,7 @@ class MAPPOTrainer:
         buffer_factory: Callable[[], Any] | None = None,
         output_dir: str | Path = "results",
         resume_from: str | Path | None = None,
+        single_bwp_mode: bool = False,
     ):
         """Initialize dependencies without starting training.
 
@@ -49,6 +53,7 @@ class MAPPOTrainer:
             (buffer_factory) (Callable[[], Any] | None): Rollout-buffer constructor.
             (output_dir) (str | Path): Result directory.
             (resume_from) (str | Path | None): Optional checkpoint path.
+            (single_bwp_mode) (bool): Restrict each slice/target to at most one BWP.
 
         Return:
             (None).
@@ -61,30 +66,73 @@ class MAPPOTrainer:
         self.env = env
         self.agent = agent
         self.buffer_factory = buffer_factory
-        self.output_dir = Path(output_dir)
-        self.resume_from = Path(resume_from) if resume_from is not None else None
+        self.single_bwp_mode = bool(single_bwp_mode)
+        self.model_name = (
+            "mappo_single_bwp" if self.single_bwp_mode else "mappo"
+        )
+        self._project_root = Path(__file__).resolve().parents[2]
+        out_path = Path(output_dir)
+        self.output_dir = (
+            out_path if out_path.is_absolute() else (self._project_root / out_path)
+        )
+        if resume_from is not None:
+            res_path = Path(resume_from)
+            self._raw_resume_from: Path | None = res_path
+            self.resume_from: Path | None = (
+                res_path
+                if (res_path.is_absolute() or res_path.is_file())
+                else (self._project_root / res_path)
+            )
+        else:
+            self._raw_resume_from = None
+            self.resume_from = None
         self._owns_environment = env is None
 
-    def run(self, bwp_mode=True) -> list[dict[str, Any]]:
+    def run(
+        self,
+        bwp_mode: bool | None = None,
+        single_bwp_mode: bool | None = None,
+    ) -> list[dict[str, Any]]:
         """Run training and return metrics produced in this process.
 
         Argument:
-            (None).
+            (bwp_mode) (bool | None): Legacy flag. Whether to allow multi-BWP PRB
+                allocation (``True``) or restrict each slice/target to at most one
+                BWP (``False``).
+            (single_bwp_mode) (bool | None): Restrict each slice/target per BS
+                to at most one BWP (``True``) or allow multi-BWP allocation
+                (``False``).
 
         Return:
             (history) (list[dict[str, Any]]): Episode metrics from this run.
         """
 
+        if single_bwp_mode is not None:
+            self.single_bwp_mode = bool(single_bwp_mode)
+        elif bwp_mode is not None:
+            self.single_bwp_mode = not bool(bwp_mode)
+
+        self.model_name = (
+            "mappo_single_bwp" if self.single_bwp_mode else "mappo"
+        )
+        effective_bwp_mode = not self.single_bwp_mode
+
         training = self.config["mappo_parameters"]["training"]
+        ppo = self.config["mappo_parameters"]["ppo"]
         total_episodes = int(training["total_episodes"])
         episode_length = int(training["episode_length"])
-        save_interval = int(training.get("save_interval", 0))
-        log_interval = int(training.get("log_interval", 1))
-        update_interval = int(training.get("update_interval", 2))
-        seed = int(training.get("seed", 0))
+        save_interval = int(training["save_interval"])
+        log_interval = int(training["log_interval"])
+        update_interval = int(training["update_interval"])
+        seed = int(training["seed"])
+        use_linear_lr_decay = bool(ppo["use_linear_lr_decay"])
 
         self._seed_everything(seed)
-        self.env = self.env if self.env is not None else self._create_environment(bwp_mode)
+        self.env = (
+            self.env
+            if self.env is not None
+            else self._create_environment(effective_bwp_mode)
+        )
 
         try:
             initial_local_obs, initial_global_state = self._reset_environment(seed)
@@ -93,7 +141,6 @@ class MAPPOTrainer:
             )
             self._create_missing_agent_components(local_obs_dim, global_state_dim)
             # Policy log-probabilities must cover only actions applied by the environment.
-            from ppo.envs.env import BaseISACEnv
             if isinstance(self.env, BaseISACEnv) and hasattr(getattr(self.agent, "actornetwork", None), "power_mean"):
                 raise RuntimeError(
                     "The Env uses fixed pEach power. Migrate the PPO Actor/log-probability "
@@ -102,19 +149,18 @@ class MAPPOTrainer:
             self.contract.agent_structure(self.agent, local_obs_dim, global_state_dim)
             self.contract.finite_agent_parameters(self.agent)
 
-            from ppo.utils.result_artifacts import ResultArtifacts
-
             self.output_dir.mkdir(parents=True, exist_ok=True)
-            artifacts = ResultArtifacts(self.output_dir)
+            artifacts = ResultArtifacts(self.output_dir, run_name=self.model_name)
             metrics_path = artifacts.prepare_metrics(resume=self.resume_from is not None)
-            checkpoint_dir = self.output_dir / "checkpoints"
+            checkpoint_dir = self.output_dir / "checkpoints" / self.model_name
             checkpoint_dir.mkdir(parents=True, exist_ok=True)
-            checkpoint_manager = CheckpointManager(self.config, self.agent)
+            checkpoint_manager = CheckpointManager(self.config, ppo_agent=self.agent, mode="mappo")
 
             start_episode = 0
             global_step = 0
             if self.resume_from is not None:
-                start_episode, global_step = checkpoint_manager.load(self.resume_from)
+                resume_target = self._resolve_resume_target(checkpoint_dir)
+                start_episode, global_step = checkpoint_manager.load(resume_target)
             if start_episode > total_episodes:
                 raise ValueError(
                     "Checkpoint episode exceeds mappo_parameters.training.total_episodes"
@@ -142,14 +188,20 @@ class MAPPOTrainer:
                     info_sums: dict[str, float] = {}
                     info_counts: dict[str, int] = {}
                     steps_taken = 0
+                    accepts_power = self._env_accepts_power()
 
                     for step in range(episode_length):
                         policy_output = self.contract.policy_output(
                             self.agent.select_action(local_obs, global_state)
                         )
                         actions_prb, actions_pwr, log_probs, value = policy_output
+                        step_out = (
+                            self.env.step(actions_prb, actions_pwr)
+                            if accepts_power
+                            else self.env.step(actions_prb)
+                        )
                         transition = self.contract.step_result(
-                            self.env.step(actions_prb),
+                            step_out,
                             local_obs_dim,
                             global_state_dim,
                         )
@@ -198,16 +250,19 @@ class MAPPOTrainer:
                         update_metrics = self.agent.update(buffer)
                         numeric_metrics = self._numeric_metrics(update_metrics)
                         self.contract.finite_agent_parameters(self.agent)
-                        #self.agent.update_learning_rate(episode, total_episodes)
+                        if use_linear_lr_decay and callable(
+                            getattr(self.agent, "update_learning_rate", None)
+                        ):
+                            self.agent.update_learning_rate(episode, total_episodes)
 
                     record: dict[str, Any] = {
+                        **self._serializable_info(final_info),
+                        **self._mean_float_info(info_sums, info_counts),
+                        **numeric_metrics,
                         "episode": episode + 1,
                         "global_step": global_step,
                         "episode_return": float(episode_return),
                         "episode_length": steps_taken,
-                        **self._serializable_info(final_info),
-                        **self._mean_float_info(info_sums, info_counts),
-                        **numeric_metrics,
                     }
                     history.append(record)
                     metrics_file.write(json.dumps(record, ensure_ascii=False) + "\n")
@@ -229,11 +284,61 @@ class MAPPOTrainer:
 
             figure_paths = artifacts.render(metrics_path)
             print(f"figures saved to {artifacts.figures_dir} ({len(figure_paths)} PNG files)")
-            self.env.plot_sensing_resource_usage()
+            if callable(getattr(self.env, "plot_sensing_resource_usage", None)):
+                try:
+                    self._call_plot_sensing_resource_usage(artifacts.figures_dir)
+                except Exception as exc:
+                    print(f"Warning: could not plot sensing resource usage: {exc}")
             return history
         finally:
             if self._owns_environment and callable(getattr(self.env, "close", None)):
                 self.env.close()
+
+    def _resolve_resume_target(self, checkpoint_dir: Path) -> Path:
+        """Resolve an existing checkpoint path from cwd, project root, or checkpoint_dir."""
+        raw_path = self._raw_resume_from
+        if raw_path is None:
+            raise ValueError("resume_from is not configured")
+        candidates = [raw_path]
+        if not raw_path.is_absolute():
+            candidates.append(self._project_root / raw_path)
+        candidates.append(checkpoint_dir / raw_path.name)
+        for candidate in candidates:
+            if candidate.is_file():
+                return candidate
+        return self.resume_from if self.resume_from is not None else raw_path
+
+    def _call_plot_sensing_resource_usage(self, figures_dir: Path) -> None:
+        """Call env.plot_sensing_resource_usage with save_dir when accepted."""
+        plot_fn = self.env.plot_sensing_resource_usage
+        try:
+            params = inspect.signature(plot_fn).parameters
+        except (TypeError, ValueError):
+            params = {}
+        accepts_save_dir = "save_dir" in params or any(
+            parameter.kind == inspect.Parameter.VAR_KEYWORD
+            for parameter in params.values()
+        )
+        if accepts_save_dir:
+            plot_fn(save_dir=str(figures_dir))
+        else:
+            plot_fn()
+
+    def _env_accepts_power(self) -> bool:
+        """Return whether an injected non-BaseISACEnv accepts (prb, pwr) in step()."""
+        if isinstance(self.env, BaseISACEnv):
+            return False
+        try:
+            params = list(inspect.signature(self.env.step).parameters.values())
+        except (TypeError, ValueError):
+            return False
+        if any(p.kind == inspect.Parameter.VAR_POSITIONAL for p in params):
+            return True
+        positional = [
+            p for p in params
+            if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+        ]
+        return len(positional) >= 2
 
     def _create_environment(self, bwp_mode=True) -> Any:
         """Create the integrated ISAC environment.
