@@ -113,6 +113,46 @@ mappo_parameters:
     log_interval: 10                   # Ghi log kết quả sau mỗi 10 episode
     device: "cuda"                      # Thiết bị huấn luyện ("cuda" hoặc "cpu")
     seed: 42                           # Random seed cố định để tái lập kết quả
-  # Bỏ eval_interval vì không cần thiết, khó đánh giá khi chạy ep dài nên không cần thiết, 
+  # Bỏ eval_interval vì không cần thiết, khó đánh giá khi chạy ep dài nên không cần thiết,
   # có thể đánh giá qua biểu đồ cuối
+
+sac:
+  state_dim: 135
+  num_bs: 5
+  num_bwp: 2
+  num_targets: 5
+  num_slices: 4
+  hidden_dims: [256, 256]
+  gamma: 0.99
+  tau: 0.005
+  alpha_init: 0.2
+  actor_lr: 1.0e-4
+  critic_lr: 1.0e-4
+  alpha_lr: 3.0e-4
+  policy_delay: 2
+  grad_clip: 5.0
+  buffer_capacity: 50000
+  batch_size: 256
+  warmup_steps: 1000
+
+dqn:
+  local_obs_dim: 55
+  global_state_dim: 135
+  num_bs: 5
+  num_bwp: 2
+  num_targets: 5
+  num_slices: 4
+  total_prb: 60
+  num_destinations: 18
+  hidden_dims: [256, 256]
+  gamma: 0.99
+  lr: 1.0e-4
+  eps_start: 1.0
+  eps_end: 0.05
+  eps_decay: 0.997
+  target_update: 2
+  grad_clip: 1.0
+  buffer_capacity: 10000
+  batch_size: 128
+  warmup_steps: 500
 
