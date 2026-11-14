@@ -1,0 +1,60 @@
+hierarchical_parameters:
+  # ============================================================================
+  # 1. Cấu hình phân tầng thời gian (Timescale & Training)
+  # ============================================================================
+  timescale:
+    subframes_per_frame: 10            # F = 10 subframes trong 1 Frame (SAC ra quyết định mỗi 10 ms)
+    total_episodes: 2000                # Tổng số episode huấn luyện
+    episode_length: 100                # Số subframe trong 1 episode (100 subframes = 10 frames)
+    save_interval: 20                  # Lưu checkpoint sau mỗi 20 episodes
+    log_interval: 1                    # Ghi log sau mỗi 1 episode
+    seed: 42                           # Random seed cố định để tái lập kết quả
+    device: "cuda"                     # "cuda" hoặc "cpu"
+
+  # ============================================================================
+  # 2. Siêu tham số SAC (Frame Level - Quản lý Macro Budget BWP)
+  # ============================================================================
+  sac:
+    actor_lr: 3.0e-4                   # Tốc độ học của Actor
+    critic_lr: 3.0e-4                  # Tốc độ học của 2 Critics
+    alpha_lr: 3.0e-4                   # Tốc độ tự điều chỉnh hệ số Entropy alpha
+    gamma: 0.99                        # Hệ số chiết khấu cấp Frame
+    tau: 0.005                         # Hệ số Soft-update Polyak cho Target Critic
+    init_alpha: 0.2                    # Giá trị khởi tạo của alpha (khám phá)
+    action_scale: 1.0                  # Tỷ lệ scale action
+    action_bias: 0.0                   # Bias action
+    batch_size: 32                     # Kích thước batch update SAC
+    policy_delay: 2                    # Cập nhật Actor sau mỗi 2 lần cập nhật Critic
+    replay_capacity: 10000             # Kích thước Replay Buffer cấp Frame
+
+  # ============================================================================
+  # 3. Siêu tham số DQN (Subframe Level - Phân bổ rời rạc PRB)
+  # ============================================================================
+  dqn:
+    lr: 1.0e-3                         # Tốc độ học mạng Q-Network
+    gamma: 0.95                        # Hệ số chiết khấu cấp Subframe
+    epsilon_start: 1.0                 # Epsilon ban đầu (khám phá 100%)
+    epsilon_min: 0.05                  # Epsilon tối thiểu
+    epsilon_decay: 0.995               # Tốc độ giảm epsilon sau mỗi subframe
+    target_update_freq: 50             # Số bước cập nhật Target Q-Network
+    batch_size: 64                     # Kích thước batch update DQN
+    replay_capacity: 50000             # Kích thước Replay Buffer cấp Subframe
+
+  # ============================================================================
+  # 4. Trọng số Reward (Bám sát Eq. 4 và Eq. 9 trong Approach___Benchmark.pdf)
+  # ============================================================================
+  reward_weights:
+    sac:
+      alpha: 0.25                      # Trọng số AoI
+      beta: 0.50                       # Trọng số độ bất định vị trí + vận tốc EKF
+      gamma: 0.15                      # Trọng số chi phí BWP (năng lượng, chuyển mạch, phân mảnh, guardband)
+      lambda_qos: 0.30                 # Trọng số vi phạm tỷ lệ phục vụ QoS của 2 loại slice
+    
+    dqn:
+      alpha: 0.30
+      beta: 0.40
+      gamma: 0.15
+      lambda_qos: 0.20
+      k1: 1.0                          # Tham số hàm mũ f1(x) = exp(-k1 * x)
+      k2: 1.0                          # Tham số hàm mũ f2(x)
+      k3: 1.0                          # Tham số hàm mũ f3(x)
