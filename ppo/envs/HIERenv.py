@@ -98,12 +98,12 @@ class HierISACEnv(BaseISACEnv):
 
     def _get_global_state(self):
         """
-        Construct global state vector S_t for the Centralized Critic:
+        Construct the subframe-level global state S_t (DQN / centralized critic):
         S_t = [ {U~_m^pos}, {U~_m^vel}, {A~_m}, {d~_{b,m}^pred},
                 {H~_{b,k}^avg}, {H~_{b,m}^avg}, {P~_b^res}, {N~_b^res} ]
-                
+
         Total dimension: 3*M + 2*B*M + B*K + 2*B.
-        
+
         Returns:
             global_state (np.ndarray): Shape [global_state_dim]
         """
@@ -144,3 +144,37 @@ class HierISACEnv(BaseISACEnv):
         ]).astype(np.float32)
 
         return global_state
+
+    @property
+    def sac_state_dim(self):
+        return int(self.num_embb + self.num_urllc + len(self.cost_max) + 3 * self.num_targets)
+
+    def get_sac_state(self):
+        """Construct the frame-level state for the SAC meta-controller."""
+        summary = getattr(self, "last_frame_summary", None)
+        if summary is not None:
+            delta_e = np.asarray(summary["delta_E"], dtype=np.float32)
+            delta_u = np.asarray(summary["delta_U"], dtype=np.float32)
+            norm_cost = np.asarray(summary["normalized_cost"], dtype=np.float32)
+            aoi = np.asarray(summary["aoi_mean"], dtype=np.float32)
+            u_pos = np.asarray(summary["u_pos_mean"], dtype=np.float32)
+            u_vel = np.asarray(summary["u_vel_mean"], dtype=np.float32)
+        else:
+            delta_e = np.zeros(self.num_embb, dtype=np.float32)
+            delta_u = np.zeros(self.num_urllc, dtype=np.float32)
+            norm_cost = np.zeros(len(self.cost_max), dtype=np.float32)
+            aoi = np.asarray(self.aoi, dtype=np.float32)
+            u_pos, u_vel = self._get_uncertainty_summary()
+
+        aoi_norm = np.clip(aoi / self.a_max, 0.0, 1.0).astype(np.float32)
+        u_pos_norm = np.clip(u_pos / self.u_pos_max, 0.0, 1.0).astype(np.float32)
+        u_vel_norm = np.clip(u_vel / self.u_vel_max, 0.0, 1.0).astype(np.float32)
+
+        return np.concatenate([
+            delta_e,
+            delta_u,
+            norm_cost,
+            aoi_norm,
+            u_pos_norm,
+            u_vel_norm,
+        ]).astype(np.float32)
