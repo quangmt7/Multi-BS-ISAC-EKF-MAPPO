@@ -462,7 +462,7 @@ class BaseISACEnv(ABC):
         """Return the global state vector for the selected environment."""
         raise NotImplementedError
 
-    def plot_sensing_resource_usage(self):
+    def plot_sensing_resource_usage(self, save_dir="results/figures"):
         """
         Vẽ và lưu hai biểu đồ:
         1. Tỷ lệ sử dụng PRB sensing theo aoi_norm.
@@ -471,13 +471,13 @@ class BaseISACEnv(ABC):
         Các mẫu được gom vào từng khoảng aoi_norm nguyên:
         [0, 1), [1, 2), [2, 3), ...
 
-        Lưu hình tại results/figures/.
+        Lưu hình tại ``save_dir`` (mặc định ``results/figures``).
         """
         import os
         import numpy as np
         import matplotlib.pyplot as plt
 
-        save_dir = "results/figures"
+        save_dir = os.fspath(save_dir) if save_dir is not None else "results/figures"
 
         aoi_norm = np.asarray(self.aoi_norm, dtype=float).ravel()
         prb_sensing_ratio = np.asarray(self.prb, dtype=float).ravel()
