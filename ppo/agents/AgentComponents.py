@@ -39,13 +39,9 @@ class Actor(nn.Module):
                                                 isActor=True)
         
         self.prb_head = nn.Linear(net_conf["hidden_dims"][1], self.n_prb * self.num_choices) # sum of prb choice
-        self.power_mean = nn.Linear(net_conf["hidden_dims"][1], self.n_prb) # n numbers of power allocation for n prb
         if net_conf["orthogonal_init"]:
-            for head in (self.prb_head, self.power_mean):
-                nn.init.orthogonal_(head.weight, gain=self.out_gain)
-                nn.init.zeros_(head.bias)
-        # Khởi tạo logstd = -1.0 (std = exp(-1.0) ≈ 0.36) giúp độ tản ban đầu vừa vặn với miền [0, 1]
-        self.power_logstd = nn.Parameter(torch.full((1, self.n_prb), -1.0))
+            nn.init.orthogonal_(self.prb_head.weight, gain=self.out_gain)
+            nn.init.zeros_(self.prb_head.bias)
         #print("n_prb:", self.n_prb)
         #print("num_choices:", self.num_choices)
          
@@ -94,28 +90,12 @@ class Actor(nn.Module):
         #print("logp_prb std:", logp_prb.std().item())
         entropy_prb = prb_dist.entropy().sum(dim=-1)
     
-        # Second branch: Power (continuous)
-        raw_mean = self.power_mean(feat)
-        std = torch.exp(self.power_logstd).expand_as(raw_mean)
-        power_dist = Normal(raw_mean, std)
-
+        # Env applies fixed pEach power, so power is a placeholder excluded from logp/entropy.
         if action_power is None:
-            u = power_dist.sample()
-            action_power = torch.sigmoid(u)
-        else:
-            # evaluation: clamp before logit to avoid NaN in the boundary
-            clamped_action = action_power.clamp(1e-6, 1.0 - 1e-6)
-            u = torch.log(clamped_action) - torch.log(1.0 - clamped_action)
+            action_power = torch.ones_like(action_prb, dtype=torch.float32)
 
-        #softplus
-        # ln(da/du) = -(softplus(u) + softplus(-u))
-        log_jac = -(F.softplus(u) + F.softplus(-u))
-        logp_power = (power_dist.log_prob(u) - log_jac).sum(dim=-1)
-        entropy_power = power_dist.entropy().sum(dim=-1)
-
-        # result
-        total_log_prob = logp_prb + logp_power
-        total_entropy = entropy_prb + entropy_power
+        total_log_prob = logp_prb
+        total_entropy = entropy_prb
 
         #print("prb_logits shape:", prb_logits.shape)
         #print("entropy per PRB shape:", prb_dist.entropy().shape)

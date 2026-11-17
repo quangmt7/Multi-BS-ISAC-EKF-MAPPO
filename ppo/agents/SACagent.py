@@ -138,7 +138,7 @@ class SACAgent:
         self.target_critic_1.load_state_dict(self.critic_1.state_dict())
         self.target_critic_2.load_state_dict(self.critic_2.state_dict())
 
-        alpha_init = float(cfg.get("alpha_init", 0.2))
+        alpha_init = float(cfg["init_alpha"])
         self.log_alpha = nn.Parameter(
             torch.tensor(math.log(alpha_init), dtype=torch.float32, device=self.device)
         )
@@ -150,13 +150,21 @@ class SACAgent:
             lr=float(cfg["critic_lr"]),
         )
         self.alpha_optimizer = optim.Adam([self.log_alpha], lr=float(cfg["alpha_lr"]))
+        # RuntimeContract/CheckpointManager look up per-critic optimizers; both critics share one.
+        self.critic_1_optimizer = self.critic_optimizer
+        self.critic_2_optimizer = self.critic_optimizer
 
-        self.replay_buffer = SACReplayBuffer(int(cfg["buffer_capacity"]))
+        self.replay_buffer = SACReplayBuffer(int(cfg["replay_capacity"]))
         self._update_step = 0
 
     @property
     def alpha(self):
         return self.log_alpha.exp().item()
+
+    @alpha.setter
+    def alpha(self, value):
+        # alpha is derived from log_alpha; CheckpointManager restores log_alpha itself.
+        pass
 
     def select_action(self, global_state, single_bwp=False, deterministic=False):
         state_t = torch.as_tensor(
@@ -185,9 +193,11 @@ class SACAgent:
         return ratios
 
     def store_transition(self, state, action, reward, next_state, done):
+        # Critic is trained on the actor's tanh space [-1, 1], not on ratios [0, 1].
+        tanh_action = np.asarray(action, dtype=np.float32).flatten() * 2.0 - 1.0
         self.replay_buffer.push(
             state,
-            np.asarray(action).flatten(),
+            tanh_action,
             reward,
             next_state,
             float(done),

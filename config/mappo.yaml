@@ -3,12 +3,12 @@ mappo_parameters:
   ppo:
     lr_actor: 3.0e-4                   # Tốc độ học mạng Actor 
     lr_critic: 5.0e-4                  # Tốc độ học mạng Critic
-    gamma: 0.99                        # Hệ số chiết khấu phần thưởng (Discount factor gamma = 0.99)
+    gamma: 0.99                        # Hệ số cokhiết khấu phần thưởng (Discount factor gamma = 0.99)
     gae_lambda: 0.95                   # Hệ số GAE lambda = 0.95
     clip_epsilon: 0.2                  # Biên độ PPO clipping epsilon = 0.2
-    ppo_epochs: 4                     # Số epoch tối ưu hóa trên buffer mỗi lần cập nhật
+    ppo_epochs: 4                      # Số epoch tối ưu hóa trên buffer mỗi lần cập nhật
     batch_size: 32                     # Kích thước mỗi mini-batch huấn luyện (100 slots / 4 = 25)
-    entropy_coef: 0.0001                 # Trọng số khuyến khích khám phá (Entropy bonus coefficient)
+    entropy_coef: 0.0001               # Trọng số khuyến khích khám phá (Entropy bonus coefficient)
     value_loss_coef: 0.5               # Trọng số hàm mất mát của Critic (Value loss coefficient)
     max_grad_norm: 0.5                 # Ngưỡng cắt gradient chống bùng nổ (Gradient clipping)
     use_clipped_value_loss: false      # Sử dụng clipped value loss để huấn luyện Critic ổn định
@@ -83,7 +83,7 @@ mappo_parameters:
     c3_pos_uncertainty: 0.1            # c3 = 0.1: Phạt khi bất định vị trí EKF vượt ngưỡng: U_pos > U_pos_max
     c4_vel_uncertainty: 0.1            # c4 = 0.1: Phạt khi bất định vận tốc EKF vượt ngưỡng: U_vel > U_vel_max
     c5_sens_freq: 0.2                  # c5 = 0.2: Phạt khi sensing quá thường xuyên mà không cần thiết
-    #pero_max: 0.1                      # pero_max = 0.1: Ngưỡng tỷ lệ dùng PRB để phạt nếu vượt, phục vụ phạt c5 
+    #pero_max: 0.1                     # pero_max = 0.1: Ngưỡng tỷ lệ dùng PRB để phạt nếu vượt, phục vụ phạt c5 
     penalty_power_budget: 0.5          # Phạt khi tổng công suất BS vượt P_b^max (ràng buộc vật lý)
     aoi_thr: 5                         # Ngưỡng aoi (cao hơn thì phải sensing, thấp hơn thì khuyến khích không sensing)
     delta_u_pos: 20                    # Ngưỡng chênh lệch pos uncertainty (m)
@@ -115,44 +115,4 @@ mappo_parameters:
     seed: 42                           # Random seed cố định để tái lập kết quả
   # Bỏ eval_interval vì không cần thiết, khó đánh giá khi chạy ep dài nên không cần thiết,
   # có thể đánh giá qua biểu đồ cuối
-
-sac:
-  state_dim: 135
-  num_bs: 5
-  num_bwp: 2
-  num_targets: 5
-  num_slices: 4
-  hidden_dims: [256, 256]
-  gamma: 0.99
-  tau: 0.005
-  alpha_init: 0.2
-  actor_lr: 1.0e-4
-  critic_lr: 1.0e-4
-  alpha_lr: 3.0e-4
-  policy_delay: 2
-  grad_clip: 5.0
-  buffer_capacity: 50000
-  batch_size: 256
-  warmup_steps: 1000
-
-dqn:
-  local_obs_dim: 55
-  global_state_dim: 135
-  num_bs: 5
-  num_bwp: 2
-  num_targets: 5
-  num_slices: 4
-  total_prb: 60
-  num_destinations: 18
-  hidden_dims: [256, 256]
-  gamma: 0.99
-  lr: 1.0e-4
-  eps_start: 1.0
-  eps_end: 0.05
-  eps_decay: 0.997
-  target_update: 2
-  grad_clip: 1.0
-  buffer_capacity: 10000
-  batch_size: 128
-  warmup_steps: 500
 

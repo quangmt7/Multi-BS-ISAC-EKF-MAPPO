@@ -60,10 +60,10 @@ class DQNAgent:
 
         self.gamma = float(cfg["gamma"])
         self.lr = float(cfg["lr"])
-        self.eps = float(cfg["eps_start"])
-        self.eps_end = float(cfg["eps_end"])
-        self.eps_decay = float(cfg["eps_decay"])
-        self.target_update = int(cfg["target_update"])
+        self.eps = float(cfg["epsilon_start"])
+        self.eps_end = float(cfg["epsilon_min"])
+        self.eps_decay = float(cfg["epsilon_decay"])
+        self.target_update = int(cfg["target_update_freq"])
         self.grad_clip = float(cfg["grad_clip"])
         self.batch_size = int(cfg["batch_size"])
         self.warmup_steps = int(cfg["warmup_steps"])
@@ -124,8 +124,9 @@ class DQNAgent:
         self.criticnetwork = self.critic_net
         self.actor_optimizer = self.optimizer
         self.critic_optimizer = self.optimizer
+        self.q_net = self.policy_net
 
-        self.replay_buffer = DQNReplayBuffer(int(cfg["buffer_capacity"]))
+        self.replay_buffer = DQNReplayBuffer(int(cfg["replay_capacity"]))
         self._update_step = 0
 
         nprb_per_bwp = self.total_prb // self.num_bwp
@@ -133,6 +134,14 @@ class DQNAgent:
             [w for w in range(self.num_bwp) for _ in range(nprb_per_bwp)],
             dtype=np.int64,
         )
+
+    @property
+    def epsilon(self):
+        return self.eps
+
+    @epsilon.setter
+    def epsilon(self, value):
+        self.eps = float(value)
 
     def select_action(self, local_obs, global_state, single_bwp=False):
         B = local_obs.shape[0]
@@ -218,6 +227,9 @@ class DQNAgent:
             nlo_flat = nlo.view(B_batch * num_bs, -1)
             ngs_rep = ngs.unsqueeze(1).expand(-1, num_bs, -1).reshape(B_batch * num_bs, -1)
             acts_flat = actions.view(B_batch * num_bs, -1)
+            # Team reward/done are shared by every BS of the same transition.
+            rewards = rewards.repeat_interleave(num_bs, dim=0)
+            dones = dones.repeat_interleave(num_bs, dim=0)
         else:
             lo_flat = lo
             gs_rep = gs
@@ -228,7 +240,6 @@ class DQNAgent:
         inp = torch.cat([lo_flat, gs_rep], dim=-1)
         q_all = self.policy_net(inp).view(-1, self.total_prb, self.num_destinations)
         q_selected = q_all.gather(2, acts_flat.unsqueeze(-1)).squeeze(-1)
-        q_loss_per_sample = q_selected.mean(dim=-1)
 
         with torch.no_grad():
             inp_next = torch.cat([nlo_flat, ngs_rep], dim=-1)
