@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import shutil
 from pathlib import Path
 from typing import Any
 
@@ -19,27 +18,44 @@ class ResultArtifacts:
 
     Argument:
         (output_dir) (str | Path): Directory containing training results.
+        (run_name) (str | None): Optional run identifier used to scope metrics
+            and figures without colliding with the default MAPPO paths.
 
     Return:
         (None).
     """
 
-    def __init__(self, output_dir: str | Path):
+    def __init__(self, output_dir: str | Path, run_name: str | None = None):
         """Store the output paths without changing existing results.
 
         Argument:
             (output_dir) (str | Path): Directory containing training results.
+            (run_name) (str | None): Optional run identifier. When ``None``,
+                uses ``metrics/metrics.jsonl`` and ``figures/``.
 
         Return:
             (None).
         """
 
+        if run_name is not None:
+            if not isinstance(run_name, str) or not run_name.strip():
+                raise ValueError("run_name must be a non-empty string when provided")
+            cleaned = run_name.strip()
+            if "/" in cleaned or "\\" in cleaned or cleaned in (".", ".."):
+                raise ValueError(f"Invalid run_name: {run_name!r}")
+            run_name = cleaned
+
         self.output_dir = Path(output_dir)
-        self.metrics_path = self.output_dir / "metrics" / "metrics.jsonl"
-        self.figures_dir = self.output_dir / "figures"
+        self.run_name = run_name
+        if self.run_name is None:
+            self.metrics_path = self.output_dir / "metrics" / "metrics.jsonl"
+            self.figures_dir = self.output_dir / "figures"
+        else:
+            self.metrics_path = self.output_dir / "metrics" / f"{self.run_name}.jsonl"
+            self.figures_dir = self.output_dir / "figures" / self.run_name
 
     def prepare_metrics(self, *, resume: bool) -> Path:
-        """Select the metric file and preserve an older root-level metric log.
+        """Ensure the metrics directory exists and return the metrics log path.
 
         Argument:
             (resume) (bool): Whether training resumes from a checkpoint.
@@ -48,10 +64,8 @@ class ResultArtifacts:
             (metrics_path) (Path): Metric log inside the metrics directory.
         """
 
+        del resume
         self.metrics_path.parent.mkdir(parents=True, exist_ok=True)
-        legacy_path = self.output_dir / "metrics.jsonl"
-        if resume and not self.metrics_path.exists() and legacy_path.is_file():
-            shutil.copyfile(legacy_path, self.metrics_path)
         return self.metrics_path
 
     def render_existing(self) -> list[Path]:
@@ -65,13 +79,9 @@ class ResultArtifacts:
         """
 
         if not self.metrics_path.is_file():
-            legacy_path = self.output_dir / "metrics.jsonl"
-            if not legacy_path.is_file():
-                raise FileNotFoundError(
-                    f"No training metrics found in {self.output_dir}"
-                )
-            self.metrics_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(legacy_path, self.metrics_path)
+            raise FileNotFoundError(
+                f"No training metrics found at {self.metrics_path}"
+            )
         return self.render(self.metrics_path)
 
     def render(self, metrics_path: str | Path) -> list[Path]:
@@ -102,14 +112,35 @@ class ResultArtifacts:
 
         metric_figures = (
             ("comm_rate_mean_mbps", "Mean UE rate (Mbps)", "comm_rate.png"),
+            ("mean_embb_rate_mbps", "Mean eMBB rate (Mbps)", "comm_embb_rate.png"),
             ("qos_satisfaction_rate", "QoS satisfaction rate", "comm_qos_satisfaction.png"),
+            ("qos_eMBB_rate", "eMBB QoS satisfaction rate", "comm_qos_embb.png"),
+            ("qos_URLLC_rate", "URLLC QoS satisfaction rate", "comm_qos_urllc.png"),
+            ("mean_urllc_latency_ms", "Mean URLLC latency (ms)", "comm_urllc_latency.png"),
             ("sensing_success_prob_mean", "Mean sensing success probability", "sensing_success_prob.png"),
             ("aoi_mean", "Mean age of information (slots)", "sensing_aoi.png"),
             ("pos_error_mean_m", "Mean position error (m)", "sensing_pos_error.png"),
             ("vel_error_mean_mps", "Mean velocity error (m/s)", "sensing_vel_error.png"),
+            ("u_pos_mean", "Mean EKF position uncertainty (m^2)", "sensing_pos_uncertainty.png"),
+            ("u_vel_mean", "Mean EKF velocity uncertainty (m^2/s^2)", "sensing_vel_uncertainty.png"),
+            ("energy_cost", "BWP energy cost (J)", "bwp_energy_cost.png"),
+            ("switch_cost", "BWP switching cost", "bwp_switch_cost.png"),
+            ("guardband_cost", "BWP guardband cost", "bwp_guardband_cost.png"),
+            ("r_aoi", "AoI reward component", "reward_aoi.png"),
+            ("r_uncertainty", "Uncertainty reward component", "reward_uncertainty.png"),
+            ("r_cost", "BWP cost reward component", "reward_cost.png"),
+            ("r_comm", "Communication service reward component", "reward_comm.png"),
+            ("r_penalty", "Reward penalty", "reward_penalty.png"),
             ("policy_loss", "Policy loss", "ppo_policy_loss.png"),
             ("critic_loss", "Critic loss", "ppo_critic_loss.png"),
             ("entropy", "Policy entropy", "ppo_entropy.png"),
+            ("sac_actor_loss", "SAC actor loss", "sac_actor_loss.png"),
+            ("sac_critic_loss", "SAC critic loss", "sac_critic_loss.png"),
+            ("sac_alpha", "SAC entropy temperature (alpha)", "sac_alpha.png"),
+            ("dqn_loss", "DQN loss", "dqn_loss.png"),
+            ("dqn_epsilon", "DQN exploration epsilon", "dqn_epsilon.png"),
+            ("mean_sac_reward", "Mean SAC frame reward", "sac_frame_reward.png"),
+            ("mean_dqn_reward", "Mean DQN subframe reward", "dqn_subframe_reward.png"),
         )
         for key, label, filename in metric_figures:
             if len(self._series(records, key)[0]):
@@ -136,7 +167,11 @@ class ResultArtifacts:
                     record = json.loads(line)
                 except json.JSONDecodeError as exc:
                     raise ValueError(f"Invalid JSON at {path}:{line_number}") from exc
-                if not isinstance(record, dict) or not isinstance(record.get("episode"), int):
+                if (
+                    not isinstance(record, dict)
+                    or isinstance(record.get("episode"), bool)
+                    or not isinstance(record.get("episode"), int)
+                ):
                     raise ValueError(f"Invalid episode record at {path}:{line_number}")
                 records.append(record)
         if not records:
