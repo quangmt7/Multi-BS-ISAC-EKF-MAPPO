@@ -4,7 +4,7 @@ hierarchical_parameters:
   # ============================================================================
   timescale:
     subframes_per_frame: 10            # F = 10 subframes trong 1 Frame (SAC ra quyết định mỗi 10 ms)
-    total_episodes: 2000                # Tổng số episode huấn luyện
+    total_episodes: 2000               # Tổng số episode huấn luyện; giống mappo.yaml để so sánh cùng số bước môi trường
     episode_length: 100                # Số subframe trong 1 episode (100 subframes = 10 frames)
     save_interval: 20                  # Lưu checkpoint sau mỗi 20 episodes
     log_interval: 1                    # Ghi log sau mỗi 1 episode

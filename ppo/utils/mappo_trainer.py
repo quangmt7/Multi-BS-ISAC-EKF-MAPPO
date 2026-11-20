@@ -92,10 +92,14 @@ class MAPPOTrainer:
         self,
         bwp_mode: bool | None = None,
         single_bwp_mode: bool | None = None,
+        total_episodes: int | None = None,
     ) -> list[dict[str, Any]]:
         """Run training and return metrics produced in this process.
 
         Argument:
+            (total_episodes) (int | None): Override of
+                ``mappo_parameters.training.total_episodes``; lets a resumed run go
+                further without editing the config the checkpoint was saved with.
             (bwp_mode) (bool | None): Legacy flag. Whether to allow multi-BWP PRB
                 allocation (``True``) or restrict each slice/target to at most one
                 BWP (``False``).
@@ -119,7 +123,10 @@ class MAPPOTrainer:
 
         training = self.config["mappo_parameters"]["training"]
         ppo = self.config["mappo_parameters"]["ppo"]
-        total_episodes = int(training["total_episodes"])
+        if total_episodes is None:
+            total_episodes = int(training["total_episodes"])
+        elif isinstance(total_episodes, bool) or not isinstance(total_episodes, int) or total_episodes <= 0:
+            raise ValueError("total_episodes must be a positive integer")
         episode_length = int(training["episode_length"])
         save_interval = int(training["save_interval"])
         log_interval = int(training["log_interval"])

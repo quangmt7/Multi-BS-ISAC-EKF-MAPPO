@@ -15,7 +15,7 @@ class DQNReplayBuffer:
         self.buffer = deque(maxlen=capacity)
 
     def push(self, local_obs, global_state, action, reward,
-             next_local_obs, next_global_state, done):
+             next_local_obs, next_global_state, done, budget_feat):
         self.buffer.append((
             np.asarray(local_obs, dtype=np.float32),
             np.asarray(global_state, dtype=np.float32),
@@ -24,11 +24,12 @@ class DQNReplayBuffer:
             np.asarray(next_local_obs, dtype=np.float32),
             np.asarray(next_global_state, dtype=np.float32),
             float(done),
+            np.asarray(budget_feat, dtype=np.float32),
         ))
 
     def sample(self, batch_size, device):
         batch = random.sample(self.buffer, batch_size)
-        lo, gs, act, rew, nlo, ngs, done = zip(*batch)
+        lo, gs, act, rew, nlo, ngs, done, bud = zip(*batch)
         return (
             torch.as_tensor(np.stack(lo), dtype=torch.float32, device=device),
             torch.as_tensor(np.stack(gs), dtype=torch.float32, device=device),
@@ -37,6 +38,7 @@ class DQNReplayBuffer:
             torch.as_tensor(np.stack(nlo), dtype=torch.float32, device=device),
             torch.as_tensor(np.stack(ngs), dtype=torch.float32, device=device),
             torch.as_tensor(done, dtype=torch.float32, device=device).unsqueeze(1),
+            torch.as_tensor(np.stack(bud), dtype=torch.float32, device=device),
         )
 
     def __len__(self):
@@ -56,6 +58,15 @@ class DQNAgent:
         self.num_slices = int(cfg["num_slices"])
         self.total_prb = int(cfg["total_prb"])
         self.num_destinations = int(cfg["num_destinations"])
+        self.num_columns = self.num_targets + self.num_slices
+        self.budget_dim = self.num_bwp * self.num_columns
+        self.n_prb_per_bwp = np.asarray(cfg["n_prb_per_bwp"], dtype=np.int64)
+        # Budget column (target m or slice s) of each destination; -1 for idle.
+        self._dest_column = np.asarray(cfg["dest_column"], dtype=np.int64)
+        if (self.n_prb_per_bwp.shape != (self.num_bwp,)
+                or self.n_prb_per_bwp.sum() != self.total_prb
+                or self._dest_column.shape != (self.num_destinations,)):
+            raise ValueError("n_prb_per_bwp / dest_column do not match the PRB and destination layout")
         hidden_dims = list(cfg["hidden_dims"])
 
         self.gamma = float(cfg["gamma"])
@@ -69,7 +80,7 @@ class DQNAgent:
         self.warmup_steps = int(cfg["warmup_steps"])
 
         self.device = torch.device(device)
-        input_dim = self.local_obs_dim + self.global_state_dim
+        input_dim = self.local_obs_dim + self.global_state_dim + self.budget_dim
 
         backbone, out_gain = build_mlp(
             input_dim=input_dim,
@@ -129,11 +140,9 @@ class DQNAgent:
         self.replay_buffer = DQNReplayBuffer(int(cfg["replay_capacity"]))
         self._update_step = 0
 
-        nprb_per_bwp = self.total_prb // self.num_bwp
-        self._bwp_of_prb = np.array(
-            [w for w in range(self.num_bwp) for _ in range(nprb_per_bwp)],
-            dtype=np.int64,
-        )
+        self._bwp_of_prb = np.repeat(np.arange(self.num_bwp), self.n_prb_per_bwp)
+        self._bwp_of_prb_t = torch.as_tensor(self._bwp_of_prb, device=self.device)
+        self._dest_column_t = torch.as_tensor(np.maximum(self._dest_column, 0), device=self.device)
 
     @property
     def epsilon(self):
@@ -143,48 +152,67 @@ class DQNAgent:
     def epsilon(self, value):
         self.eps = float(value)
 
-    def select_action(self, local_obs, global_state, single_bwp=False):
+    def budget_features(self, budget):
+        """SAC integer budget [B, W, M+S] -> per-BS share of each BWP, shape [B, W*(M+S)]."""
+        budget = np.asarray(budget, dtype=np.float32)
+        return (budget / self.n_prb_per_bwp[None, :, None]).reshape(budget.shape[0], -1)
+
+    def _assign_within_budget(self, q, quota, explore):
+        """Pick one destination per PRB without exceeding the SAC quota of any column.
+
+        Greedy PRBs with the strongest preference choose first; exploring PRBs pick
+        uniformly among idle and destinations whose column still has quota.
+        """
+        quota = np.array(quota, dtype=np.int64, copy=True)
+        cols = self._dest_column[1:]
+        actions = np.zeros(self.total_prb, dtype=np.int64)
+        order = (np.random.permutation(self.total_prb) if explore
+                 else np.argsort(-q.max(axis=1), kind="stable"))
+        for r in order:
+            w = self._bwp_of_prb[r]
+            allowed = np.flatnonzero(quota[w, cols] > 0) + 1
+            if allowed.size == 0:
+                continue
+            if explore:
+                d = int(np.random.choice(np.append(allowed, 0)))
+            else:
+                d = int(allowed[np.argmax(q[r, allowed])])
+                if q[r, 0] >= q[r, d]:
+                    d = 0
+            if d:
+                quota[w, cols[d - 1]] -= 1
+                actions[r] = d
+        return actions
+
+    def _feasible_mask(self, budget_feat):
+        """[N, P, D] mask of destinations whose column has quota in the PRB's BWP (idle always)."""
+        has_quota = budget_feat.view(-1, self.num_bwp, self.num_columns) > 0
+        mask = has_quota[:, self._bwp_of_prb_t, :][:, :, self._dest_column_t]
+        mask[:, :, 0] = True
+        return mask
+
+    def select_action(self, local_obs, global_state, budget):
         B = local_obs.shape[0]
         gs = np.asarray(global_state, dtype=np.float32)
         if gs.ndim == 1:
-            gs_expanded = np.broadcast_to(gs, (B, gs.shape[0]))
-        else:
-            gs_expanded = gs
+            gs = np.tile(gs, (B, 1))
+        inp = np.concatenate([local_obs, gs, self.budget_features(budget)], axis=1)
 
-        actions_list = []
         with torch.no_grad():
-            for b in range(B):
-                inp = np.concatenate([local_obs[b], gs_expanded[b]])
-                inp_t = torch.as_tensor(inp, dtype=torch.float32, device=self.device).unsqueeze(0)
-                q_flat = self.policy_net(inp_t).squeeze(0)
-                q_values = q_flat.view(self.total_prb, self.num_destinations)
+            q_all = self.policy_net(
+                torch.as_tensor(inp, dtype=torch.float32, device=self.device)
+            ).view(B, self.total_prb, self.num_destinations).cpu().numpy()
 
-                if random.random() < self.eps:
-                    act = np.random.randint(0, self.num_destinations, size=self.total_prb)
-                else:
-                    act = q_values.argmax(dim=-1).cpu().numpy()
-
-                actions_list.append(act)
-
-        actions_prb = np.stack(actions_list).astype(np.int64)
-
-        if single_bwp:
-            for dest in range(1, self.num_destinations):
-                for b in range(B):
-                    prb_mask = actions_prb[b] == dest
-                    if not prb_mask.any():
-                        continue
-                    bwp_ids = self._bwp_of_prb[prb_mask]
-                    counts = np.bincount(bwp_ids, minlength=self.num_bwp)
-                    best_bwp = int(np.argmax(counts))
-                    kill = prb_mask & (self._bwp_of_prb != best_bwp)
-                    actions_prb[b, kill] = 0
+        budget = np.asarray(budget)
+        actions_prb = np.stack([
+            self._assign_within_budget(q_all[b], budget[b], random.random() < self.eps)
+            for b in range(B)
+        ])
 
         actions_pwr = np.ones((B, self.total_prb), dtype=np.float32)
         log_probs = np.zeros(B, dtype=np.float32)
 
-        gs_t = torch.as_tensor(gs if gs.ndim == 1 else gs[0],
-                               dtype=torch.float32, device=self.device).unsqueeze(0)
+        gs_t = torch.as_tensor(gs[0], dtype=torch.float32, device=self.device).unsqueeze(0)
         with torch.no_grad():
             value = self.critic_net(gs_t).item()
 
@@ -199,10 +227,12 @@ class DQNAgent:
             return self.critic_net(gs_t).squeeze().item()
 
     def store_transition(self, local_obs, global_state, action, reward,
-                         next_local_obs, next_global_state, done):
+                         next_local_obs, next_global_state, done, budget):
+        # The same frame budget conditions s and s' (goal-conditioned convention).
         self.replay_buffer.push(
             local_obs, global_state, action, reward,
             next_local_obs, next_global_state, float(done),
+            self.budget_features(budget),
         )
 
     def update(self, buffer=None):
@@ -211,39 +241,33 @@ class DQNAgent:
             "dqn/epsilon": self.eps,
             "dqn/q_mean": 0.0,
         }
-        if len(self.replay_buffer) < self.warmup_steps:
+        if len(self.replay_buffer) < max(self.warmup_steps, self.batch_size):
             return zeros
 
-        lo, gs, actions, rewards, nlo, ngs, dones = self.replay_buffer.sample(
+        lo, gs, actions, rewards, nlo, ngs, dones, bud = self.replay_buffer.sample(
             self.batch_size, self.device
         )
 
-        B_batch = lo.shape[0]
-        num_bs = lo.shape[1] if lo.dim() == 3 else 1
+        B_batch, num_bs = lo.shape[0], lo.shape[1]
+        lo_flat = lo.view(B_batch * num_bs, -1)
+        gs_rep = gs.unsqueeze(1).expand(-1, num_bs, -1).reshape(B_batch * num_bs, -1)
+        nlo_flat = nlo.view(B_batch * num_bs, -1)
+        ngs_rep = ngs.unsqueeze(1).expand(-1, num_bs, -1).reshape(B_batch * num_bs, -1)
+        bud_flat = bud.view(B_batch * num_bs, -1)
+        acts_flat = actions.view(B_batch * num_bs, -1)
+        # Team reward/done are shared by every BS of the same transition.
+        rewards = rewards.repeat_interleave(num_bs, dim=0)
+        dones = dones.repeat_interleave(num_bs, dim=0)
 
-        if lo.dim() == 3:
-            lo_flat = lo.view(B_batch * num_bs, -1)
-            gs_rep = gs.unsqueeze(1).expand(-1, num_bs, -1).reshape(B_batch * num_bs, -1)
-            nlo_flat = nlo.view(B_batch * num_bs, -1)
-            ngs_rep = ngs.unsqueeze(1).expand(-1, num_bs, -1).reshape(B_batch * num_bs, -1)
-            acts_flat = actions.view(B_batch * num_bs, -1)
-            # Team reward/done are shared by every BS of the same transition.
-            rewards = rewards.repeat_interleave(num_bs, dim=0)
-            dones = dones.repeat_interleave(num_bs, dim=0)
-        else:
-            lo_flat = lo
-            gs_rep = gs
-            nlo_flat = nlo
-            ngs_rep = ngs
-            acts_flat = actions
-
-        inp = torch.cat([lo_flat, gs_rep], dim=-1)
+        inp = torch.cat([lo_flat, gs_rep, bud_flat], dim=-1)
         q_all = self.policy_net(inp).view(-1, self.total_prb, self.num_destinations)
         q_selected = q_all.gather(2, acts_flat.unsqueeze(-1)).squeeze(-1)
 
         with torch.no_grad():
-            inp_next = torch.cat([nlo_flat, ngs_rep], dim=-1)
+            inp_next = torch.cat([nlo_flat, ngs_rep, bud_flat], dim=-1)
             q_next_all = self.target_net(inp_next).view(-1, self.total_prb, self.num_destinations)
+            # Per-PRB feasibility only; the joint per-column count limit is not enforced here.
+            q_next_all = q_next_all.masked_fill(~self._feasible_mask(bud_flat), float("-inf"))
             q_next_max = q_next_all.max(dim=-1).values
             td_target = rewards.expand_as(q_selected) + self.gamma * (1.0 - dones.expand_as(q_selected)) * q_next_max
 

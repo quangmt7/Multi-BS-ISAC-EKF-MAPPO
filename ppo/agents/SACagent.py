@@ -81,6 +81,23 @@ class SACReplayBuffer:
     def __len__(self):
         return len(self.buffer)
 
+    def state_dict(self):
+        states, actions, rewards, next_states, dones = zip(*self.buffer)
+        return {
+            "states": torch.as_tensor(np.stack(states)),
+            "actions": torch.as_tensor(np.stack(actions)),
+            "rewards": torch.as_tensor(rewards, dtype=torch.float32),
+            "next_states": torch.as_tensor(np.stack(next_states)),
+            "dones": torch.as_tensor(dones, dtype=torch.float32),
+        }
+
+    def load_state_dict(self, data):
+        self.buffer.clear()
+        for row in zip(data["states"].numpy(), data["actions"].numpy(),
+                       data["rewards"].tolist(), data["next_states"].numpy(),
+                       data["dones"].tolist()):
+            self.buffer.append(row)
+
 
 class _SACCritic(nn.Module):
 
@@ -167,6 +184,7 @@ class SACAgent:
         pass
 
     def select_action(self, global_state, single_bwp=False, deterministic=False):
+        """Return (ratios [B,W,M+S] for the env, raw tanh action [action_dim] for the replay)."""
         state_t = torch.as_tensor(
             global_state, dtype=torch.float32, device=self.device
         ).unsqueeze(0)
@@ -177,8 +195,8 @@ class SACAgent:
             else:
                 action, _, _ = self.actor.sample(state_t)
 
-        ratios_flat = (action.squeeze(0).cpu().numpy() + 1.0) / 2.0
-        ratios = ratios_flat.reshape(self.action_shape)
+        raw_action = action.squeeze(0).cpu().numpy()
+        ratios = ((raw_action + 1.0) / 2.0).reshape(self.action_shape)
 
         if single_bwp:
             for j in range(self.action_shape[2]):
@@ -190,14 +208,14 @@ class SACAgent:
                     ratios[b, :, j] = mask
 
         ratios = np.maximum(ratios, 0.0)
-        return ratios
+        return ratios, raw_action
 
     def store_transition(self, state, action, reward, next_state, done):
-        # Critic is trained on the actor's tanh space [-1, 1], not on ratios [0, 1].
-        tanh_action = np.asarray(action, dtype=np.float32).flatten() * 2.0 - 1.0
+        # action is the raw tanh-space actor output; single-BWP masking is treated as
+        # part of the environment so the critic sees the same actions the actor proposes.
         self.replay_buffer.push(
             state,
-            tanh_action,
+            np.asarray(action, dtype=np.float32).reshape(-1),
             reward,
             next_state,
             float(done),
@@ -211,7 +229,7 @@ class SACAgent:
             "sac/alpha": self.alpha,
             "sac/entropy": 0.0,
         }
-        if len(self.replay_buffer) < self.warmup_steps:
+        if len(self.replay_buffer) < max(self.warmup_steps, self.batch_size):
             return zeros
 
         states, actions, rewards, next_states, dones = self.replay_buffer.sample(
