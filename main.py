@@ -10,9 +10,7 @@ from ppo.train_hierarchical import main as train_hierarchical_main
 from ppo.train_ppo import main as train_ppo_main
 
 
-def parse_args(
-    argv: Sequence[str] | None = None,
-) -> tuple[argparse.Namespace, list[str]]:
+def parse_args(argv: Sequence[str] | None = None) -> tuple[argparse.Namespace, list[str]]:
     """Parse root dispatcher flags and preserve trainer-specific arguments."""
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     parser = argparse.ArgumentParser(

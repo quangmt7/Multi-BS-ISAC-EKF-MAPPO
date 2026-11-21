@@ -12,3 +12,9 @@ test/
 /.pytest_cache/
 /.ruff_cache/
 /results/
+
+reference/
+
+CLAUDE.md
+docs/
+

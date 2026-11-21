@@ -10,8 +10,9 @@ Timescale architecture:
     - Reward: r_SAC(f) via frame_summary["reward"]
 - Inner loop (Subframe level, t = 1..F):
     - Agent: DQNAgent (Deep Q-Network)
-    - State: s_b^DQN(t) via env.get_dqn_state() or global_state
-    - Action: a_b^DQN(t) [B, sum(nPrb)] discrete PRB allocation choices in {0..M+K}
+    - State: s_b^DQN(t) = [local_obs[b], global_state, SAC budget of BS b]
+    - Action: a_b^DQN(t) [B, sum(nPrb)] discrete PRB allocation choices in {0..M+K},
+      chosen only among destinations whose SAC budget column still has quota
     - Reward: r_DQN(t) from env.step() team reward
 """
 
@@ -97,8 +98,6 @@ class HierarchicalISACTrainer:
         hier_cfg = self.config["hierarchical_parameters"]
         time_cfg = hier_cfg["timescale"]
         train_cfg = hier_cfg["training"] if "training" in hier_cfg else time_cfg
-        sac_cfg = hier_cfg["sac"]
-        dqn_cfg = hier_cfg["dqn"]
 
         if subframes_per_frame is not None:
             if (
@@ -136,10 +135,7 @@ class HierarchicalISACTrainer:
 
         self._bwp = list(sys_config["bwp"])
         self.num_bwp_ru = [len(self._bwp)] * self.num_bs
-
-        self.sac_batch_size = int(sac_cfg["batch_size"])
-        self.sac_policy_delay = int(sac_cfg["policy_delay"])
-        self.dqn_batch_size = int(dqn_cfg["batch_size"])
+        self._n_prb_per_bwp = [int(n) for n in sys_config["nPrb"]]
 
     def _create_environment(self) -> Any:
         """Instantiate HierISACEnv in multi-BWP or single-BWP mode."""
@@ -156,66 +152,54 @@ class HierarchicalISACTrainer:
         )
 
     def _create_missing_agent_components(
-        self, sac_state_dim: int, dqn_state_dim: int
+        self, sac_state_dim: int, local_obs_dim: int, global_state_dim: int
     ) -> None:
-        """Create SAC and DQN agents when they were not injected."""
+        """Create SAC and DQN agents from hierarchical_parameters.sac/dqn.
+
+        Dimensions are taken from the live environment, not from YAML.
+        """
+        num_bwp = len(self._bwp)
+        num_comm_slices = self.num_slices - self.num_targets
         hier_cfg = self.config["hierarchical_parameters"]
-        sac_cfg = hier_cfg["sac"]
-        dqn_cfg = hier_cfg["dqn"]
 
         if self.sac_agent is None:
-            try:
-                from ppo.agents.SACagent import SACAgent
-            except (ImportError, ModuleNotFoundError) as exc:
-                raise RuntimeError(
-                    "ppo.agents.SACagent is unavailable; cannot create SACAgent."
-                ) from exc
+            from ppo.agents.SACagent import SACAgent
 
-            actor_lr = float(sac_cfg["actor_lr"])
-            critic_lr = float(sac_cfg["critic_lr"])
-            alpha_lr = float(sac_cfg["alpha_lr"])
-            sac_train_cons = {
-                "device": self.device,
-                "gamma": float(sac_cfg["gamma"]),
-                "tau": float(sac_cfg["tau"]),
-                "alpha": float(sac_cfg["init_alpha"]),
-                "action_scale": float(sac_cfg["action_scale"]),
-                "action_bias": float(sac_cfg["action_bias"]),
-                "lr": actor_lr,
-                "actor_lr": actor_lr,
-                "critic_lr": critic_lr,
-                "alpha_lr": alpha_lr,
-            }
-            self.sac_agent = SACAgent(
+            sac_cfg = dict(hier_cfg["sac"])
+            sac_cfg.update(
                 state_dim=sac_state_dim,
-                num_rus=self.num_bs,
-                num_bwp_ru=self.num_bwp_ru,
-                num_slices=self.num_slices,
-                train_cons=sac_train_cons,
+                num_bs=self.num_bs,
+                num_bwp=num_bwp,
+                num_targets=self.num_targets,
+                num_slices=num_comm_slices,
             )
+            self.sac_agent = SACAgent(sac_cfg, device=str(self.device))
 
         if self.dqn_agent is None:
-            try:
-                from ppo.agents.DQNAgent import DQNAgent
-            except (ImportError, ModuleNotFoundError) as exc:
-                raise RuntimeError(
-                    "ppo.agents.DQNAgent is unavailable. Provide a valid DQNAgent "
-                    "implementation or inject dqn_agent before running training."
-                ) from exc
+            from ppo.agents.DQNagent import DQNAgent
 
-            self.dqn_agent = DQNAgent(
-                state_dim=dqn_state_dim,
-                n_prb=self.n_prb,
+            dqn_cfg = dict(hier_cfg["dqn"])
+            dqn_cfg.update(
+                local_obs_dim=local_obs_dim,
+                global_state_dim=global_state_dim,
+                num_bs=self.num_bs,
+                num_bwp=num_bwp,
                 num_targets=self.num_targets,
-                num_ues=self.num_ues,
-                lr=float(dqn_cfg["lr"]),
-                gamma=float(dqn_cfg["gamma"]),
-                epsilon_start=float(dqn_cfg["epsilon_start"]),
-                epsilon_min=float(dqn_cfg["epsilon_min"]),
-                epsilon_decay=float(dqn_cfg["epsilon_decay"]),
-                target_update_freq=int(dqn_cfg["target_update_freq"]),
-                device=self.device,
+                num_slices=num_comm_slices,
+                total_prb=self.n_prb,
+                num_destinations=1 + self.num_targets + self.num_ues,
+                n_prb_per_bwp=self._n_prb_per_bwp,
+                dest_column=self._dest_columns().tolist(),
             )
+            self.dqn_agent = DQNAgent(dqn_cfg, device=str(self.device))
+
+    def _dest_columns(self) -> np.ndarray:
+        """Budget column [M+S] of each PRB destination: target m -> m, UE k -> M + slice(k), idle -> -1."""
+        col_of_dest = np.full(1 + self.num_targets + self.num_ues, -1, dtype=np.int64)
+        col_of_dest[1:1 + self.num_targets] = np.arange(self.num_targets)
+        for k, (s, _) in enumerate(self.env.ue_indices):
+            col_of_dest[1 + self.num_targets + k] = self.num_targets + int(s)
+        return col_of_dest
 
     def _reset_environment(self, seed: int) -> tuple[np.ndarray, np.ndarray]:
         """Reset the environment and validate its return structure."""
@@ -229,56 +213,50 @@ class HierarchicalISACTrainer:
             np.asarray(result[1], dtype=np.float32),
         )
 
-    def _get_dqn_state(self, fallback_global_state: np.ndarray) -> np.ndarray:
-        """Read and validate finite subframe-level DQN state."""
-        if hasattr(self.env, "get_dqn_state"):
-            raw_state = self.env.get_dqn_state()
-        else:
-            raw_state = fallback_global_state
-        state = np.asarray(raw_state, dtype=np.float32)
-        if state.ndim not in (1, 2) or state.size == 0:
-            raise ValueError("DQN state must be a non-empty 1D or 2D array")
-        if not np.all(np.isfinite(state)):
-            raise ValueError("DQN state must contain only finite values")
-        return state
+    def _select_dqn_actions(
+        self, local_obs: np.ndarray, global_state: np.ndarray, budget: np.ndarray
+    ) -> np.ndarray:
+        """Select budget-feasible DQN PRB actions and validate them.
 
-    def _select_dqn_actions(self, dqn_state: np.ndarray) -> np.ndarray:
-        """Select and contract-validate discrete PRB actions from DQNAgent."""
-        selector = (
-            self.dqn_agent.select_actions_all_bs
-            if callable(getattr(self.dqn_agent, "select_actions_all_bs", None))
-            else self.dqn_agent.select_action
-        )
-        kwargs: dict[str, Any] = {}
-        try:
-            params = inspect.signature(selector).parameters
-        except (TypeError, ValueError):
-            params = {}
-        if "budget" in params:
-            kwargs["budget"] = getattr(self.env, "budget", None)
-        if "bwp_mode" in params:
-            kwargs["bwp_mode"] = not self.single_bwp_mode
-        raw_actions = selector(dqn_state, **kwargs)
-        return self.contract.dqn_actions(raw_actions)
-
-    def _enforce_single_bwp(self, a_sac: np.ndarray) -> np.ndarray:
-        """Enforce Benchmark: Hierarchical-singleBWP constraint .
-
-        For each RU b and slice s, keep only the BWP with maximum allocation
-        and zero out all other BWPs.
+        A single-BWP SAC budget is non-zero on one BWP per column, so the budget
+        alone enforces single-BWP; the env re-checks both constraints.
         """
-        arr = np.asarray(a_sac, dtype=np.float32)
-        if arr.ndim == 1:
-            arr = arr.reshape(self.num_bs, -1, self.num_slices)
-        elif arr.ndim == 2 and self.num_bs == 1:
-            arr = arr.reshape(1, arr.shape[0], arr.shape[1])
+        actions_prb, _, _, _ = self.dqn_agent.select_action(
+            local_obs, global_state, budget
+        )
+        return self.contract.dqn_actions(actions_prb)
 
-        a_single = np.zeros_like(arr)
-        for b in range(self.num_bs):
-            for s in range(self.num_slices):
-                best_w = int(np.argmax(arr[b, :, s]))
-                a_single[b, best_w, s] = arr[b, best_w, s]
-        return a_single
+    @staticmethod
+    def _sac_replay_path(checkpoint_dir: Path) -> Path:
+        return checkpoint_dir / "sac_replay.pt"
+
+    def _save_sac_replay(self, checkpoint_dir: Path, next_episode: int) -> None:
+        """Keep the latest SAC replay next to the checkpoints (DQN replay is too large)."""
+        path = self._sac_replay_path(checkpoint_dir)
+        tmp = path.with_suffix(".tmp")
+        torch.save(
+            {"episode": next_episode, "buffer": self.sac_agent.replay_buffer.state_dict()},
+            tmp,
+        )
+        tmp.replace(path)
+
+    def _restore_after_resume(self, checkpoint_dir: Path, start_episode: int) -> None:
+        """Reload the matching SAC replay and skip warmup for the already-trained agents."""
+        path = self._sac_replay_path(checkpoint_dir)
+        if path.is_file():
+            data = torch.load(path, map_location="cpu", weights_only=True)
+            if int(data["episode"]) == start_episode:
+                self.sac_agent.replay_buffer.load_state_dict(data["buffer"])
+                print(f"Restored SAC replay ({len(self.sac_agent.replay_buffer)} frames)")
+            else:
+                print(
+                    f"SAC replay is from episode {int(data['episode'])}, "
+                    f"checkpoint resumes at {start_episode}; not restored"
+                )
+        # Warmup exists to collect data before an untrained agent learns; after a
+        # resume each agent only needs one batch before updating.
+        self.sac_agent.warmup_steps = 0
+        self.dqn_agent.warmup_steps = 0
 
     def run(
         self,
@@ -325,12 +303,12 @@ class HierarchicalISACTrainer:
                 initial_local_obs, initial_global_state
             )
             _, sac_state_dim = self.contract.sac_state(self.env.get_sac_state())
-            initial_dqn_state = self._get_dqn_state(initial_global_state)
-            dqn_state_dim = int(
-                getattr(self.env, "dqn_state_dim", initial_dqn_state.shape[-1])
-            )
+            # DQN input per BS = concat(local_obs[b], global_state, budget share [W*(M+S)]).
+            dqn_state_dim = local_obs_dim + global_state_dim + len(self._bwp) * self.num_slices
 
-            self._create_missing_agent_components(sac_state_dim, dqn_state_dim)
+            self._create_missing_agent_components(
+                sac_state_dim, local_obs_dim, global_state_dim
+            )
             self.contract.sac_agent_structure(self.sac_agent, sac_state_dim)
             self.contract.dqn_agent_structure(self.dqn_agent, dqn_state_dim)
             self.contract.finite_hier_parameters(self.sac_agent, self.dqn_agent)
@@ -361,6 +339,7 @@ class HierarchicalISACTrainer:
                 )
                 start_episode, global_step = checkpoint_manager.load(resume_target)
                 self.contract.finite_hier_parameters(self.sac_agent, self.dqn_agent)
+                self._restore_after_resume(resume_target.parent, start_episode)
 
             if start_episode > episodes_to_run:
                 raise ValueError(
@@ -369,13 +348,7 @@ class HierarchicalISACTrainer:
 
             file_mode = checkpoint_manager.prepare_metrics(metrics_path, start_episode)
             history: list[dict[str, Any]] = []
-            last_actor_loss = torch.tensor(0.0, device=self.device)
-            sac_step = global_step // max(1, self.subframes_per_frame)
-            expected_sac_action_dim = getattr(
-                self.sac_agent,
-                "action_dim",
-                sum(self.num_bwp_ru) * self.num_slices,
-            )
+            expected_sac_action_dim = int(self.sac_agent.action_dim)
 
             with metrics_path.open(file_mode, encoding="utf-8") as metrics_file:
                 for episode in range(start_episode, episodes_to_run):
@@ -421,17 +394,13 @@ class HierarchicalISACTrainer:
                                 f"expected {sac_state_dim}, got {step_sac_dim}"
                             )
 
-                        a_sac = np.asarray(
-                            self.sac_agent.select_action(s_sac), dtype=np.float32
+                        sac_ratios, sac_raw_action = self.sac_agent.select_action(
+                            s_sac, single_bwp=self.single_bwp_mode
                         )
                         flat_sac_action = self.contract.sac_action(
-                            a_sac.reshape(-1), expected_dim=expected_sac_action_dim
+                            np.asarray(sac_ratios, dtype=np.float32).reshape(-1),
+                            expected_dim=expected_sac_action_dim,
                         )
-                        if self.single_bwp_mode:
-                            a_sac = self._enforce_single_bwp(flat_sac_action)
-                            flat_sac_action = self.contract.sac_action(
-                                a_sac.reshape(-1), expected_dim=expected_sac_action_dim
-                            )
 
                         frames_to_run = min(
                             self.subframes_per_frame,
@@ -450,8 +419,11 @@ class HierarchicalISACTrainer:
 
                         # 2. Micro-timescale: DQN runs subframes
                         for _ in range(frames_to_run):
-                            s_dqn = self._get_dqn_state(global_state)
-                            actions_prb = self._select_dqn_actions(s_dqn)
+                            # end_frame() clears env.budget after the last subframe.
+                            budget = np.array(self.env.budget, copy=True)
+                            actions_prb = self._select_dqn_actions(
+                                local_obs, global_state, budget
+                            )
 
                             step_out = self.env.step(actions_prb)
                             transition = self.contract.hier_step_result(
@@ -470,28 +442,18 @@ class HierarchicalISACTrainer:
                             )
 
                             r_dqn = float(env_reward)
-                            s_dqn_next = self._get_dqn_state(next_global_state)
-
-                            for b in range(self.num_bs):
-                                self.dqn_agent.replay_buffer.push(
-                                    s_dqn[b] if s_dqn.ndim > 1 else s_dqn,
-                                    actions_prb[b],
-                                    r_dqn,
-                                    s_dqn_next[b] if s_dqn_next.ndim > 1 else s_dqn_next,
-                                    float(terminated),
-                                )
-
-                            dqn_update_out = self.dqn_agent.update(
-                                batch_size=self.dqn_batch_size
+                            self.dqn_agent.store_transition(
+                                local_obs,
+                                global_state,
+                                actions_prb,
+                                r_dqn,
+                                next_local_obs,
+                                next_global_state,
+                                float(terminated),
+                                budget,
                             )
-                            if isinstance(dqn_update_out, Mapping):
-                                dqn_loss = float(
-                                    dqn_update_out.get(
-                                        "dqn_loss", dqn_update_out.get("loss", 0.0)
-                                    )
-                                )
-                            else:
-                                dqn_loss = float(dqn_update_out)
+
+                            dqn_loss = float(self.dqn_agent.update()["dqn/q_loss"])
                             if not np.isfinite(dqn_loss):
                                 raise FloatingPointError(
                                     "DQN update returned non-finite loss"
@@ -535,34 +497,20 @@ class HierarchicalISACTrainer:
                             raise ValueError("SAC reward must be finite")
 
                         ep_sac_rewards.append(r_sac)
-                        self.sac_agent.replay_buffer.push(
+                        self.sac_agent.store_transition(
                             s_sac,
-                            flat_sac_action,
+                            sac_raw_action,
                             r_sac,
                             s_sac_next,
                             float(terminated),
                         )
 
-                        sac_step += 1
-                        if len(self.sac_agent.replay_buffer) >= self.sac_batch_size:
-                            actor_loss, critic_loss, last_actor_loss = (
-                                self.sac_agent.update(
-                                    step=sac_step,
-                                    policy_delay=self.sac_policy_delay,
-                                    last_actor_loss=last_actor_loss,
-                                    batch_size=self.sac_batch_size,
-                                )
-                            )
-                            actor_loss_val = float(
-                                actor_loss.item()
-                                if isinstance(actor_loss, torch.Tensor)
-                                else actor_loss
-                            )
-                            critic_loss_val = float(
-                                critic_loss.item()
-                                if isinstance(critic_loss, torch.Tensor)
-                                else critic_loss
-                            )
+                        if len(self.sac_agent.replay_buffer) >= max(
+                            self.sac_agent.warmup_steps, self.sac_agent.batch_size
+                        ):
+                            sac_metrics = self.sac_agent.update()
+                            actor_loss_val = float(sac_metrics["sac/actor_loss"])
+                            critic_loss_val = float(sac_metrics["sac/critic_loss"])
                             if not (
                                 np.isfinite(actor_loss_val)
                                 and np.isfinite(critic_loss_val)
@@ -579,6 +527,8 @@ class HierarchicalISACTrainer:
                         s_sac = s_sac_next
                         if terminated or truncated:
                             break
+
+                    self.dqn_agent.update_epsilon()
 
                     mean_sac_r = (
                         float(np.mean(ep_sac_rewards)) if ep_sac_rewards else 0.0
@@ -639,6 +589,7 @@ class HierarchicalISACTrainer:
                             episode,
                             global_step,
                         )
+                        self._save_sac_replay(checkpoint_dir, episode + 1)
 
             figure_paths = artifacts.render(metrics_path)
             print(

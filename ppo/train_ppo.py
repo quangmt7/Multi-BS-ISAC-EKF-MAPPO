@@ -21,6 +21,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, default=project_root / "results")
     parser.add_argument("--resume", type=Path, default=None)
     parser.add_argument(
+        "--episodes",
+        type=int,
+        default=None,
+        help="Override total episodes (config must stay unchanged to --resume)",
+    )
+    parser.add_argument(
         "--single-bwp",
         action="store_true",
         help="Restrict each slice/target per BS to at most one BWP",
@@ -54,7 +60,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         resume_from=args.resume,
         single_bwp_mode=args.single_bwp,
     )
-    trainer.run()
+    trainer.run(total_episodes=args.episodes)
 
 
 if __name__ == "__main__":
@@ -73,6 +79,7 @@ USAGE GUIDE / CLI CHEATSHEET (train_ppo.py):
 
 3. RESUME TRAINING FROM A CHECKPOINT:
    python ppo/train_ppo.py --resume results/checkpoints/mappo/episode_000100.pt
+   python ppo/train_ppo.py --episodes 3000 --resume results/checkpoints/mappo/episode_002000.pt
    python ppo/train_ppo.py --single-bwp --resume results/checkpoints/mappo_single_bwp/episode_000100.pt
 
 4. RE-GENERATE FIGURES WITHOUT RETRAINING:

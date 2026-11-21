@@ -18,9 +18,9 @@ system_parameters:
   bwp: [1,2]                           # BWP được dùng
   nPrb: [30,30]                        # Số PRB của từng BWP
   pEach: [5,5]                         # Công suất cố định mỗi PRB (mW); PHY đổi sang W
-  cost_gb: 2                          # Hệ số eta trong ceil(eta * |mu_w - mu_w'|), cùng nguồn BWP
+  cost_gb: 2                           # Hệ số eta trong công thức chi phí guard band (eta * |mu_w - mu_w'|), cùng nguồn BWP
   urllc_packet_size_bits: 256          # Kích thước gói URLLC (bit)
-  fStart: [0, 11]                     # kHz; Channel đổi sang Hz
+  fStart: [0, 11]                      # Tần số bắt đầu của mỗi BWP (kHz); Channel đổi sang MHz
   oleF: 1                              # Hệ số suy giảm theo tần số
   carrier_frequency_ghz: 3.5           # Tần số sóng mang trung tâm f_c = 3.5 GHz
   prbBW: 180.0                         # Khoảng cách của PRB = 180.0 kHz
@@ -33,12 +33,12 @@ system_parameters:
   # ----------------------------------------------------------------------------
   noise_psd_dbm_hz: -174.0             # Mật độ phổ tạp âm nhiệt: N_0 = -174.0 dBm/Hz
   noise_figure_db: 7.0                 # Hệ số tạp âm máy thu: NF = 7.0 dB
-  noise_power_per_prb_dbm: -111.4      # Tạp âm trên 1 PRB: sigma^2 = -174 + 7 + 10*log10(360k) = -111.4 dBm
-  noise_power_per_prb_watt: 7.24e-15   # sigma^2 trên 1 PRB dạng tuyến tính (Watt) = B_0 * N_0
+  noise_power_per_prb_dbm: -114.45     # Tạp âm PRB CƠ SỞ (mu=0, B_0 = prbBW = 180 kHz): -174 + 7 + 10*log10(180k) = -114.45 dBm. Code nhân thêm 2^mu cho từng BWP
+  noise_power_per_prb_watt: 3.59e-15   # Dạng Watt của giá trị trên = B_0 * N_0. Code dùng B_w * N_0 = 3.59e-15 * 2^mu (BWP0 mu=1: -111.44 dBm; BWP1 mu=2: -108.43 dBm)
   cost_switch_c: 1.0                   # Chi phí mỗi lần đổi trạng thái BWP của slice
   cost_switch_s: 1.0                   # Chi phí mỗi lần đổi trạng thái BWP của target
   pa_eff: 1.0                          # Hiệu suất khuếch đại công suất, 0 < eta <= 1
-  dt: 0.001                           # Bước tính năng lượng (s), bằng slot_duration_ms / 1000
+  dt: 0.001                            # Bước tính năng lượng (s), bằng slot_duration_ms / 1000
 
   # ----------------------------------------------------------------------------
   # 4. Kênh truyền, Beamforming và Can nhiễu
@@ -56,14 +56,14 @@ system_parameters:
     num_antennas_bs: 64                # N_b = 64 phần tử antenna tại mỗi trạm BS
     antenna_element_gain_dbi: 0.0      # G_ant: Độ lợi của 1 phần tử antenna đơn lẻ = 0 dBi (đẳng hướng)
     antenna_element_gain_linear: 1.0   # G_ant tuyến tính = 10^(0/10) = 1.0 
-    antenna_gain_tx_dbi: 18.0        # G_b (hoặc G_max): Độ lợi antenna phát cực đại của mảng BS (dBi)
+    antenna_gain_tx_dbi: 18.0          # G_b (hoặc G_max): Độ lợi antenna phát cực đại của mảng BS (dBi)
     antenna_gain_rx_dbi: 18.0          # G_rx: Độ lợi antenna thu cực đại của BS (dBi)
-    antenna_gain_tx_linear: 63.1      # G_tx (G_b/G_max) tuyến tính = 10^(5/10)
-    antenna_gain_rx_linear: 63.1      # G_rx tuyến tính = 10^(5/10)
+    antenna_gain_tx_linear: 63.1       # G_tx (G_b/G_max) tuyến tính = 10^(5/10)
+    antenna_gain_rx_linear: 63.1       # G_rx tuyến tính = 10^(5/10)
     beam_pattern_q: 2.0                # q > 0: Tham số điều khiển độ suy giảm búp sóng khi lệch hướng 
 
     # --- Can nhiễu C2S và IBI ---
-    c2s_leakage_eta0: 1.0e-5          # eta_0: Coupling công suất C2S còn dư sau cách ly/triệt nhiễu (-110 dB); giả định mô phỏng
+    c2s_leakage_eta0: 1.0e-5           # eta_0: Coupling công suất C2S còn dư sau cách ly/triệt nhiễu (-110 dB); giả định mô phỏng
     c2s_leakage_alpha: 1.0             # alpha: Hệ số suy giảm leakage theo khoảng cách PRB
     ibi_coupling_eta: 1.0e-5           # eta_IBI: Hệ số ghép nối công suất nhiễu liên trạm BS 
 
