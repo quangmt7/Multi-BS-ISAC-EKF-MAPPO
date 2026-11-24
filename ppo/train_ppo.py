@@ -20,6 +20,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--config-dir", type=Path, default=project_root / "config")
     parser.add_argument("--output-dir", type=Path, default=project_root / "results")
     parser.add_argument("--resume", type=Path, default=None)
+    parser.add_argument("--episode-length", type=int, default=None)
     parser.add_argument(
         "--episodes",
         type=int,
@@ -54,6 +55,12 @@ def main(argv: Sequence[str] | None = None) -> None:
         return
 
     config = ProjectConfig.from_directory(args.config_dir).data
+    for value,label in ((args.episodes,"episodes"),(args.episode_length,"episode-length")):
+        if value is not None and value <= 0:
+            raise ValueError(f"{label} must be positive")
+    if args.episode_length is not None:
+        config["mappo_parameters"]["training"]["episode_length"] = args.episode_length
+        config["system_parameters"]["simulation"]["num_slots_per_episode"] = args.episode_length
     trainer = MAPPOTrainer(
         config,
         output_dir=args.output_dir,

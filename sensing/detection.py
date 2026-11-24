@@ -48,7 +48,7 @@ class Detection:
         p_d = 0.5 * erfc(erfcinv(2 * p_f) - np.sqrt(sensing_sinr))
         return float(np.clip(p_d, 0.0, 1.0))
 
-    def detect(self, sensing_sinr):
+    def detect(self, sensing_sinr, rng=None):
         """
         Decide whether one BS detects one target.
 
@@ -65,6 +65,6 @@ class Detection:
             Detection probability used for this decision.
         """
         p_d = self.detect_prob(sensing_sinr)
-        detected = np.random.random() < p_d
+        detected = (np.random if rng is None else rng).random() < p_d
         return detected, p_d
 

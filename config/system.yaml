@@ -18,9 +18,9 @@ system_parameters:
   bwp: [1,2]                           # BWP được dùng
   nPrb: [30,30]                        # Số PRB của từng BWP
   pEach: [5,5]                         # Công suất cố định mỗi PRB (mW); PHY đổi sang W
-  cost_gb: 2                           # Hệ số eta trong công thức chi phí guard band (eta * |mu_w - mu_w'|), cùng nguồn BWP
+  cost_gb: 2                           # Hệ số eta trong công thức chi phí guard band ceil(eta * |mu_w - mu_w'|), cùng nguồn BWP
   urllc_packet_size_bits: 256          # Kích thước gói URLLC (bit)
-  fStart: [0, 11]                      # Tần số bắt đầu của mỗi BWP (kHz); Channel đổi sang MHz
+  fStart: [0, 11]                      # Tần số bắt đầu của mỗi BWP (kHz); Channel đổi sang Hz
   oleF: 1                              # Hệ số suy giảm theo tần số
   carrier_frequency_ghz: 3.5           # Tần số sóng mang trung tâm f_c = 3.5 GHz
   prbBW: 180.0                         # Khoảng cách của PRB = 180.0 kHz
@@ -58,12 +58,12 @@ system_parameters:
     antenna_element_gain_linear: 1.0   # G_ant tuyến tính = 10^(0/10) = 1.0 
     antenna_gain_tx_dbi: 18.0          # G_b (hoặc G_max): Độ lợi antenna phát cực đại của mảng BS (dBi)
     antenna_gain_rx_dbi: 18.0          # G_rx: Độ lợi antenna thu cực đại của BS (dBi)
-    antenna_gain_tx_linear: 63.1       # G_tx (G_b/G_max) tuyến tính = 10^(5/10)
-    antenna_gain_rx_linear: 63.1       # G_rx tuyến tính = 10^(5/10)
+    antenna_gain_tx_linear: 63.1       # G_tx (G_b/G_max) tuyến tính = 10^(18/10)
+    antenna_gain_rx_linear: 63.1       # G_rx tuyến tính = 10^(18/10)
     beam_pattern_q: 2.0                # q > 0: Tham số điều khiển độ suy giảm búp sóng khi lệch hướng 
 
     # --- Can nhiễu C2S và IBI ---
-    c2s_leakage_eta0: 1.0e-5           # eta_0: Coupling công suất C2S còn dư sau cách ly/triệt nhiễu (-110 dB); giả định mô phỏng
+    c2s_leakage_eta0: 1.0e-5           # eta_0: Coupling công suất C2S còn dư sau cách ly/triệt nhiễu (-50 dB); giả định mô phỏng
     c2s_leakage_alpha: 1.0             # alpha: Hệ số suy giảm leakage theo khoảng cách PRB
     ibi_coupling_eta: 1.0e-5           # eta_IBI: Hệ số ghép nối công suất nhiễu liên trạm BS 
 
@@ -98,13 +98,13 @@ system_parameters:
   # 7. Không gian kịch bản 3D (Simulation Scenario Geography)
   # ----------------------------------------------------------------------------
   scenario:
-    area_size_x_m: 200.0              # L_x: Kích thước vùng mô phỏng trục X: 1000.0 m
-    area_size_y_m: 200.0              # L_y: Kích thước vùng mô phỏng trục Y: 1000.0 m
-    area_size_z_m: 50.0               # L_z: Giới hạn độ cao trục Z: 100.0 m
+    area_size_x_m: 200.0              # L_x: Kích thước vùng mô phỏng trục X: 200.0 m
+    area_size_y_m: 200.0              # L_y: Kích thước vùng mô phỏng trục Y: 200.0 m
+    area_size_z_m: 50.0               # L_z: Giới hạn độ cao trục Z: 50.0 m
     bs_height_m: 25.0                  # Độ cao đặt antenna trạm BS: 25.0 m
     ue_height_m: 1.5                   # Độ cao thiết bị người dùng UE: 1.5 m
     target_height_min_m: 10.0          # Độ cao bay tối thiểu của target: 10.0 m
-    target_height_max_m: 50.0          # Độ cao bay tối đa của target: 60.0 m
+    target_height_max_m: 50.0          # Độ cao bay tối đa của target: 50.0 m
     target_velocity_min_mps: 5.0       # Vận tốc tối thiểu của target: 5.0 m/s (~18 km/h)
     target_velocity_max_mps: 25.0      # Vận tốc tối đa của target: 25.0 m/s (~90 km/h)
 
@@ -120,7 +120,7 @@ system_parameters:
   # ----------------------------------------------------------------------------
   requirements:
     min_ue_rate_mbps: 1.0              # R_k^min = 1.0 Mbps (Tốc độ truyền thông tối thiểu yêu cầu)
-    max_ue_delay: 1.0                  # D_u^max = 1.0 ms (Trễ tối thiểu yêu cầu)
-    min_sensing_success_prob: 0.50     # P_m^min = 0.90 (Xác suất sensing thành công tối thiểu)
-    min_detection_prob: 0.50           # P_D^min = 0.90 (Xác suất phát hiện tối thiểu mỗi BS-target)
+    max_ue_delay: 1.0                  # D_u^max = 1.0 ms (Độ trễ tối đa cho phép)
+    min_sensing_success_prob: 0.50     # P_m^min = 0.50 (Xác suất sensing thành công tối thiểu)
+    min_detection_prob: 0.50           # P_D^min = 0.50 (Xác suất phát hiện tối thiểu mỗi BS-target)
     max_prob_false_alarm: 1.0e-4       # P_F = 1.0e-4 (Xác suất báo động giả)

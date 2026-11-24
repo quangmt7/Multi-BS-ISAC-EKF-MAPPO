@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import copy
 import os
 import random
 from pathlib import Path
@@ -159,6 +160,10 @@ class CheckpointManager:
             raise ValueError("Checkpoint global_step must be a non-negative integer")
 
         payload: dict[str, Any] = {
+            "format_version": 2,
+            "mode": self.mode,
+            "feature_schema": "qos-sinr-cost-scheduler-v1",
+            "single_bwp": bool((self.ppo_agent if self.mode == "mappo" else self.dqn_agent).single_bwp),
             "episode": int(episode),
             "global_step": int(global_step),
             "config": self.config,
@@ -249,7 +254,27 @@ class CheckpointManager:
         ):
             payload["dqn_epsilon"] = float(dqn_eps)
 
+        payload["sac_replay"] = self.sac_agent.replay_buffer.state_dict()
+        payload["dqn_replay"] = self.dqn_agent.replay_buffer.state_dict()
+        payload["sac_update_step"] = self.sac_agent.update_step
+        payload["dqn_update_step"] = self.dqn_agent.update_step
         return payload
+
+    @staticmethod
+    def _learning_config(config):
+        """Allow logging/device/episode-count changes, retain learning semantics."""
+        result = copy.deepcopy(config)
+        for section in ("mappo_parameters", "hierarchical_parameters"):
+            if section not in result:
+                continue
+            cfg = result[section]
+            for name in ("training", "timescale"):
+                if name in cfg:
+                    for key in ("total_episodes", "save_interval", "log_interval", "device"):
+                        if key == "total_episodes" and section == "mappo_parameters" and cfg.get("ppo",{}).get("use_linear_lr_decay",False):
+                            continue
+                        cfg[name].pop(key, None)
+        return result
 
     def save(self, path: str | Path, episode: int, global_step: int) -> None:
         """Atomically save model, optimizer and random-generator states.
@@ -309,6 +334,18 @@ class CheckpointManager:
         checkpoint = torch.load(path, map_location=device, weights_only=False)
         if not isinstance(checkpoint, Mapping):
             raise ValueError("Checkpoint root must be a mapping")
+        if checkpoint.get("format_version") != 2 or checkpoint.get("feature_schema") != "qos-sinr-cost-scheduler-v1":
+            raise ValueError("Checkpoint uses an incompatible state/action schema; start a new run")
+        if checkpoint.get("mode") != self.mode:
+            raise ValueError("Checkpoint algorithm differs from the current trainer")
+        agent = self.ppo_agent if self.mode == "mappo" else self.dqn_agent
+        if checkpoint.get("single_bwp") != bool(agent.single_bwp):
+            raise ValueError("Checkpoint BWP mode differs from the current trainer")
+        expected_single = bool((self.ppo_agent if self.mode == "mappo" else self.dqn_agent).single_bwp)
+        if (checkpoint.get("format_version") != 2 or checkpoint.get("mode") != self.mode
+                or checkpoint.get("feature_schema") != "qos-sinr-cost-scheduler-v1"
+                or checkpoint.get("single_bwp") != expected_single):
+            raise ValueError("Checkpoint state/action schema or BWP mode is incompatible")
 
         common_required = (
             "episode",
@@ -337,11 +374,15 @@ class CheckpointManager:
                 "dqn_optimizer",
             )
 
+        if self.mode == "hierarchical":
+            mode_required += ("sac_replay","dqn_replay","sac_update_step","dqn_update_step",
+                              "sac_target_critic_1","sac_target_critic_2","sac_log_alpha",
+                              "sac_alpha_optimizer","dqn_target_net","dqn_epsilon")
         required = common_required + mode_required
         missing = [name for name in required if name not in checkpoint]
         if missing:
             raise ValueError(f"Checkpoint is missing: {', '.join(missing)}")
-        if checkpoint["config"] != self.config:
+        if self._learning_config(checkpoint["config"]) != self._learning_config(self.config):
             raise ValueError(
                 "Checkpoint configuration differs from the current configuration"
             )
@@ -420,8 +461,6 @@ class CheckpointManager:
                                 device=current_log_alpha.device,
                             )
                         )
-                    if hasattr(self.sac_agent, "alpha"):
-                        self.sac_agent.alpha = float(current_log_alpha.exp().item())
                 elif callable(getattr(current_log_alpha, "load_state_dict", None)):
                     current_log_alpha.load_state_dict(saved_log_alpha)
                 else:
@@ -453,6 +492,14 @@ class CheckpointManager:
             if "dqn_epsilon" in checkpoint and hasattr(self.dqn_agent, "epsilon"):
                 self.dqn_agent.epsilon = float(checkpoint["dqn_epsilon"])
 
+        if self.mode == "hierarchical":
+            for key in ("sac_replay","dqn_replay","sac_update_step","dqn_update_step"):
+                if key not in checkpoint:
+                    raise ValueError(f"Checkpoint is missing: {key}")
+            self.sac_agent.replay_buffer.load_state_dict(checkpoint["sac_replay"])
+            self.dqn_agent.replay_buffer.load_state_dict(checkpoint["dqn_replay"])
+            self.sac_agent.update_step = int(checkpoint["sac_update_step"])
+            self.dqn_agent.update_step = int(checkpoint["dqn_update_step"])
         random.setstate(checkpoint["python_random_state"])
         np.random.set_state(checkpoint["numpy_random_state"])
         torch_rng = checkpoint["torch_random_state"]
@@ -482,7 +529,7 @@ class CheckpointManager:
 
         path = Path(path)
         if next_episode == 0:
-            return "w"
+            return "x"
         if not path.exists():
             return "a"
 

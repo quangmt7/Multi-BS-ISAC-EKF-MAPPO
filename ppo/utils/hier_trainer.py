@@ -1,622 +1,336 @@
-"""
-Hierarchical ISAC Trainer (SAC at Frame level + DQN at Subframe level).
+"""SAC frame controller and quota-constrained DQN subframe training."""
 
-Timescale architecture:
-- Outer loop (Frame level, every F subframes, e.g. F=10):
-    - Agent: SACAgent (Soft Actor-Critic)
-    - State: s_SAC(f) via env.get_sac_state()
-    - Action: a_SAC(f) [B, W, M+S] macro PRB allocation ratios per target/slice
-    - Budget: env.begin_frame(sac_ratios, num_subframes=F) sets integer PRB caps
-    - Reward: r_SAC(f) via frame_summary["reward"]
-- Inner loop (Subframe level, t = 1..F):
-    - Agent: DQNAgent (Deep Q-Network)
-    - State: s_b^DQN(t) = [local_obs[b], global_state, SAC budget of BS b]
-    - Action: a_b^DQN(t) [B, sum(nPrb)] discrete PRB allocation choices in {0..M+K},
-      chosen only among destinations whose SAC budget column still has quota
-    - Reward: r_DQN(t) from env.step() team reward
-"""
-
-from __future__ import annotations
-
-import inspect
-import json
-import random
-import sys
 from pathlib import Path
 from typing import Any, Mapping
-
-# Ensure project root is on sys.path for direct script invocation
-if __package__ in (None, ""):
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-
+import json
+import random
 import numpy as np
 import torch
-
-from ppo.utils.checkpoint_manager import CheckpointManager
-from ppo.utils.project_config import ProjectConfig
-from ppo.utils.result_artifacts import ResultArtifacts
+from ppo.agents.allocation import sac_ratios
+from ppo.agents.SACagent import SACAgent
+from ppo.agents.DQNagent import DQNAgent
+from ppo.envs.HIERenv import HierISACEnv
+from ppo.utils.project_config import ProjectConfig, episode_scenario_seed
 from ppo.utils.runtime_contract import RuntimeContract
+from ppo.utils.checkpoint_manager import CheckpointManager
+from ppo.utils.result_artifacts import ResultArtifacts
 
 
-def load_hierarchical_config(config_dir: str | Path) -> dict[str, Any]:
-    """Load and validate hierarchical configuration via ProjectConfig."""
+def load_hierarchical_config(config_dir):
     return ProjectConfig.from_directory(config_dir, mode="hierarchical").data
 
 
 class HierarchicalISACTrainer:
-    """Coordinate 2-timescale Hierarchical RL training for Multi-BWP ISAC."""
-
     def __init__(
         self,
-        config: Mapping[str, Any],
+        config,
         *,
-        env: Any | None = None,
-        sac_agent: Any | None = None,
-        dqn_agent: Any | None = None,
-        output_dir: str | Path | None = "results",
-        resume_from: str | Path | None = None,
-        subframes_per_frame: int | None = None,
-        single_bwp_mode: bool = False,
+        env=None,
+        sac_agent=None,
+        dqn_agent=None,
+        output_dir="results",
+        resume_from=None,
+        subframes_per_frame=None,
+        single_bwp_mode=False,
     ):
-        """Initialize Hierarchical ISAC Trainer with strict config & runtime contracts.
-
-        Args:
-            config: Merged project configuration dictionary.
-            env: Optional pre-instantiated HierISACEnv.
-            sac_agent: Optional pre-instantiated SACAgent.
-            dqn_agent: Optional pre-instantiated DQNAgent.
-            output_dir: Root directory for metrics, figures, and checkpoints.
-            resume_from: Optional path to an existing checkpoint to resume from.
-            subframes_per_frame: Optional override for F (subframes per frame).
-            single_bwp_mode: If True, enforce single-BWP allocation constraint.
-        """
-        project_config = ProjectConfig(config, mode="hierarchical")
-        project_config.validate()
-        self.config = project_config.data
+        project = ProjectConfig(config, mode="hierarchical")
+        project.validate()
+        self.config = project.data
         self.contract = RuntimeContract(self.config)
-
-        self.env = env
-        self.sac_agent = sac_agent
-        self.dqn_agent = dqn_agent
-        self._owns_environment = env is None
-
+        self.env, self.sac_agent, self.dqn_agent = env, sac_agent, dqn_agent
         self.single_bwp_mode = bool(single_bwp_mode)
         self.model_name = (
-            "hierarchical_single_bwp" if self.single_bwp_mode else "hierarchical"
+            "hierarchical_single_bwp" if single_bwp_mode else "hierarchical"
         )
-
-        project_root = Path(__file__).resolve().parents[2]
-        self._project_root = project_root
-        resolved_out = "results" if output_dir is None else output_dir
-        out_path = Path(resolved_out)
-        self.output_dir = (
-            out_path if out_path.is_absolute() else (project_root / out_path)
+        root = Path(__file__).resolve().parents[2]
+        out = Path("results" if output_dir is None else output_dir)
+        self.output_dir = out if out.is_absolute() else root / out
+        resume = Path(resume_from) if resume_from is not None else None
+        self.resume_from = (
+            resume
+            if resume is None or resume.is_absolute() or resume.is_file()
+            else root / resume
         )
-
-        self.resume_from = Path(resume_from) if resume_from is not None else None
-
-        hier_cfg = self.config["hierarchical_parameters"]
-        time_cfg = hier_cfg["timescale"]
-        train_cfg = hier_cfg["training"] if "training" in hier_cfg else time_cfg
-
-        if subframes_per_frame is not None:
-            if (
-                isinstance(subframes_per_frame, bool)
-                or not isinstance(subframes_per_frame, int)
-                or subframes_per_frame <= 0
-            ):
-                raise ValueError("subframes_per_frame must be a positive integer")
-            self.subframes_per_frame = int(subframes_per_frame)
-        else:
-            self.subframes_per_frame = int(time_cfg["subframes_per_frame"])
-
-        self.total_episodes = int(train_cfg["total_episodes"])
-        self.episode_length = int(train_cfg["episode_length"])
-        self.save_interval = int(train_cfg["save_interval"])
-        self.log_interval = int(train_cfg["log_interval"])
-        self.seed = int(train_cfg["seed"])
-
-        device_str = str(train_cfg["device"])
+        hier = self.config["hierarchical_parameters"]
+        self.dqn_warmup_steps = hier["dqn"].get("warmup_steps", 0)
+        self.epsilon_decay_unit = hier["dqn"].get("epsilon_decay_unit", "subframe")
+        self.train_cfg = hier.get("training", hier["timescale"])
+        self.subframes_per_frame = (
+            hier["timescale"]["subframes_per_frame"]
+            if subframes_per_frame is None
+            else subframes_per_frame
+        )
+        if (
+            isinstance(self.subframes_per_frame, bool)
+            or not isinstance(self.subframes_per_frame, int)
+            or self.subframes_per_frame <= 0
+        ):
+            raise ValueError("subframes_per_frame must be a positive integer")
+        device = self.train_cfg["device"]
         self.device = torch.device(
-            device_str if (device_str == "cuda" and torch.cuda.is_available()) else "cpu"
+            device if device == "cuda" and torch.cuda.is_available() else "cpu"
         )
+        self.seed = self.train_cfg["seed"]
 
-        sys_config = self.config["system_parameters"]
-        self.num_bs = int(sys_config["num_bs"])
-        self.num_targets = int(sys_config["num_target"])
-
-        num_embb = int(sys_config["num_embb"])
-        num_urllc = int(sys_config["num_urllc"])
-        num_ue_1embb = int(sys_config["num_ue_1embb"])
-        num_ue_1urllc = int(sys_config["num_ue_1urllc"])
-        self.num_ues = num_embb * num_ue_1embb + num_urllc * num_ue_1urllc
-        self.n_prb = int(sum(sys_config["nPrb"]))
-        self.num_slices = num_embb + num_urllc + self.num_targets
-
-        self._bwp = list(sys_config["bwp"])
-        self.num_bwp_ru = [len(self._bwp)] * self.num_bs
-        self._n_prb_per_bwp = [int(n) for n in sys_config["nPrb"]]
-
-    def _create_environment(self) -> Any:
-        """Instantiate HierISACEnv in multi-BWP or single-BWP mode."""
-        try:
-            from ppo.envs.HIERenv import HierISACEnv
-        except (ImportError, ModuleNotFoundError, SyntaxError) as exc:
-            raise RuntimeError(
-                "ppo.envs.HIERenv is unavailable or failed to import."
-            ) from exc
-        return HierISACEnv(
-            self.config,
-            cost_max=None,
-            bwp_mode=not self.single_bwp_mode,
-        )
-
-    def _create_missing_agent_components(
-        self, sac_state_dim: int, local_obs_dim: int, global_state_dim: int
-    ) -> None:
-        """Create SAC and DQN agents from hierarchical_parameters.sac/dqn.
-
-        Dimensions are taken from the live environment, not from YAML.
-        """
-        num_bwp = len(self._bwp)
-        num_comm_slices = self.num_slices - self.num_targets
-        hier_cfg = self.config["hierarchical_parameters"]
-
+    def _create_missing_agent_components(self, sac_state_dim, dqn_state_dim):
         if self.sac_agent is None:
-            from ppo.agents.SACagent import SACAgent
-
-            sac_cfg = dict(hier_cfg["sac"])
-            sac_cfg.update(
-                state_dim=sac_state_dim,
-                num_bs=self.num_bs,
-                num_bwp=num_bwp,
-                num_targets=self.num_targets,
-                num_slices=num_comm_slices,
-            )
-            self.sac_agent = SACAgent(sac_cfg, device=str(self.device))
-
+            self.sac_agent = SACAgent(self.config, sac_state_dim, self.device)
         if self.dqn_agent is None:
-            from ppo.agents.DQNagent import DQNAgent
-
-            dqn_cfg = dict(hier_cfg["dqn"])
-            dqn_cfg.update(
-                local_obs_dim=local_obs_dim,
-                global_state_dim=global_state_dim,
-                num_bs=self.num_bs,
-                num_bwp=num_bwp,
-                num_targets=self.num_targets,
-                num_slices=num_comm_slices,
-                total_prb=self.n_prb,
-                num_destinations=1 + self.num_targets + self.num_ues,
-                n_prb_per_bwp=self._n_prb_per_bwp,
-                dest_column=self._dest_columns().tolist(),
+            self.dqn_agent = DQNAgent(
+                self.config, dqn_state_dim, self.device, single_bwp=self.single_bwp_mode
             )
-            self.dqn_agent = DQNAgent(dqn_cfg, device=str(self.device))
 
-    def _dest_columns(self) -> np.ndarray:
-        """Budget column [M+S] of each PRB destination: target m -> m, UE k -> M + slice(k), idle -> -1."""
-        col_of_dest = np.full(1 + self.num_targets + self.num_ues, -1, dtype=np.int64)
-        col_of_dest[1:1 + self.num_targets] = np.arange(self.num_targets)
-        for k, (s, _) in enumerate(self.env.ue_indices):
-            col_of_dest[1 + self.num_targets + k] = self.num_targets + int(s)
-        return col_of_dest
-
-    def _reset_environment(self, seed: int) -> tuple[np.ndarray, np.ndarray]:
-        """Reset the environment and validate its return structure."""
-        result = self.env.reset(seed=seed)
-        if not isinstance(result, tuple) or len(result) != 2:
-            raise ValueError(
-                "env.reset() must return (local_observations, global_state)"
+    def _store_dqn(self, pending, next_state, next_budget, global_step, losses):
+        state, action, reward, terminated, budget = pending
+        for b in range(state.shape[0]):
+            self.dqn_agent.replay_buffer.push(
+                state[b],
+                action[b],
+                reward,
+                next_state[b],
+                terminated,
+                budget[b],
+                next_budget[b],
             )
-        return (
-            np.asarray(result[0], dtype=np.float32),
-            np.asarray(result[1], dtype=np.float32),
-        )
+        if global_step >= self.dqn_warmup_steps:
+            metrics = self.dqn_agent.update()
+            if metrics["updated"]:
+                losses.append(metrics["dqn_loss"])
 
-    def _select_dqn_actions(
-        self, local_obs: np.ndarray, global_state: np.ndarray, budget: np.ndarray
-    ) -> np.ndarray:
-        """Select budget-feasible DQN PRB actions and validate them.
-
-        A single-BWP SAC budget is non-zero on one BWP per column, so the budget
-        alone enforces single-BWP; the env re-checks both constraints.
-        """
-        actions_prb, _, _, _ = self.dqn_agent.select_action(
-            local_obs, global_state, budget
-        )
-        return self.contract.dqn_actions(actions_prb)
-
-    @staticmethod
-    def _sac_replay_path(checkpoint_dir: Path) -> Path:
-        return checkpoint_dir / "sac_replay.pt"
-
-    def _save_sac_replay(self, checkpoint_dir: Path, next_episode: int) -> None:
-        """Keep the latest SAC replay next to the checkpoints (DQN replay is too large)."""
-        path = self._sac_replay_path(checkpoint_dir)
-        tmp = path.with_suffix(".tmp")
-        torch.save(
-            {"episode": next_episode, "buffer": self.sac_agent.replay_buffer.state_dict()},
-            tmp,
-        )
-        tmp.replace(path)
-
-    def _restore_after_resume(self, checkpoint_dir: Path, start_episode: int) -> None:
-        """Reload the matching SAC replay and skip warmup for the already-trained agents."""
-        path = self._sac_replay_path(checkpoint_dir)
-        if path.is_file():
-            data = torch.load(path, map_location="cpu", weights_only=True)
-            if int(data["episode"]) == start_episode:
-                self.sac_agent.replay_buffer.load_state_dict(data["buffer"])
-                print(f"Restored SAC replay ({len(self.sac_agent.replay_buffer)} frames)")
-            else:
-                print(
-                    f"SAC replay is from episode {int(data['episode'])}, "
-                    f"checkpoint resumes at {start_episode}; not restored"
-                )
-        # Warmup exists to collect data before an untrained agent learns; after a
-        # resume each agent only needs one batch before updating.
-        self.sac_agent.warmup_steps = 0
-        self.dqn_agent.warmup_steps = 0
-
-    def run(
-        self,
-        total_episodes: int | None = None,
-        episode_length: int | None = None,
-    ) -> list[dict[str, Any]]:
-        """Run 2-timescale hierarchical training across episodes.
-
-        Args:
-            total_episodes: Optional override for total episodes.
-            episode_length: Optional override for subframes per episode.
-
-        Returns:
-            history: List of per-episode metric dictionaries recorded in this run.
-        """
-        if total_episodes is not None:
-            if (
-                isinstance(total_episodes, bool)
-                or not isinstance(total_episodes, int)
-                or total_episodes <= 0
-            ):
-                raise ValueError("total_episodes must be a positive integer")
-            episodes_to_run = int(total_episodes)
-        else:
-            episodes_to_run = self.total_episodes
-
-        if episode_length is not None:
-            if (
-                isinstance(episode_length, bool)
-                or not isinstance(episode_length, int)
-                or episode_length <= 0
-            ):
-                raise ValueError("episode_length must be a positive integer")
-            steps_per_episode = int(episode_length)
-        else:
-            steps_per_episode = self.episode_length
-
-        self._seed_everything(self.seed)
-        self.env = self.env if self.env is not None else self._create_environment()
-
+    def _bootstrap_dqn(self, pending, sac_next, global_step, losses):
+        """Build a hypothetical continuation at an external episode timeout."""
+        if pending[3]:
+            full_caps = np.broadcast_to(
+                np.asarray(self.env.nPrb)[None, :, None], self.env.BWP_slice.shape
+            )
+            self._store_dqn(
+                pending, self.env.get_dqn_state(), full_caps, global_step, losses
+            )
+            return
+        raw = self.sac_agent.select_action(sac_next)
+        ratios = sac_ratios(raw, self.env.BWP_slice.shape, self.single_bwp_mode)
+        next_budget, _ = self.env.apportion_budget(ratios)
+        saved_budget = self.env.budget
         try:
-            initial_local_obs, initial_global_state = self._reset_environment(self.seed)
-            local_obs_dim, global_state_dim = self.contract.observation_dimensions(
-                initial_local_obs, initial_global_state
-            )
-            _, sac_state_dim = self.contract.sac_state(self.env.get_sac_state())
-            # DQN input per BS = concat(local_obs[b], global_state, budget share [W*(M+S)]).
-            dqn_state_dim = local_obs_dim + global_state_dim + len(self._bwp) * self.num_slices
+            self.env.set_budget(next_budget)
+            next_state = self.env.get_dqn_state()
+        finally:
+            self.env.set_budget(saved_budget)
+        self._store_dqn(pending, next_state, next_budget, global_step, losses)
 
-            self._create_missing_agent_components(
-                sac_state_dim, local_obs_dim, global_state_dim
-            )
-            self.contract.sac_agent_structure(self.sac_agent, sac_state_dim)
-            self.contract.dqn_agent_structure(self.dqn_agent, dqn_state_dim)
-            self.contract.finite_hier_parameters(self.sac_agent, self.dqn_agent)
-
-            self.output_dir.mkdir(parents=True, exist_ok=True)
-            artifacts = ResultArtifacts(self.output_dir, run_name=self.model_name)
-            metrics_path = artifacts.prepare_metrics(resume=self.resume_from is not None)
-            checkpoint_dir = self.output_dir / "checkpoints" / self.model_name
-            checkpoint_dir.mkdir(parents=True, exist_ok=True)
-            checkpoint_manager = CheckpointManager(
-                self.config,
-                sac_agent=self.sac_agent,
-                dqn_agent=self.dqn_agent,
-                mode="hierarchical",
-            )
-
-            start_episode = 0
-            global_step = 0
-            if self.resume_from is not None:
-                resume_candidates = (
-                    self.resume_from,
-                    self._project_root / self.resume_from,
-                    checkpoint_dir / self.resume_from.name,
+    def run(self, total_episodes=None, episode_length=None):
+        episodes = (
+            self.train_cfg["total_episodes"]
+            if total_episodes is None
+            else total_episodes
+        )
+        steps = (
+            self.train_cfg["episode_length"]
+            if episode_length is None
+            else episode_length
+        )
+        if any(
+            isinstance(v, bool) or not isinstance(v, int) or v <= 0
+            for v in (episodes, steps)
+        ):
+            raise ValueError("Episode count and length must be positive integers")
+        self.config["system_parameters"]["simulation"]["num_slots_per_episode"] = steps
+        self.config["system_parameters"]["simulation"]["num_subframes_per_frame"] = (
+            self.subframes_per_frame
+        )
+        self.train_cfg["episode_length"] = steps
+        self.config["hierarchical_parameters"]["timescale"]["subframes_per_frame"] = (
+            self.subframes_per_frame
+        )
+        step_budget = self.train_cfg.get("total_steps")
+        self._seed_everything(self.seed)
+        self.env = (
+            self.env
+            if self.env is not None
+            else HierISACEnv(self.config, bwp_mode=not self.single_bwp_mode)
+        )
+        self.env.max_steps = steps
+        local, global_state = self.env.reset(seed=self.seed)
+        local_dim, global_dim = self.contract.observation_dimensions(
+            local, global_state
+        )
+        _, sac_dim = self.contract.sac_state(self.env.get_sac_state())
+        self._create_missing_agent_components(sac_dim, local_dim)
+        self.contract.sac_agent_structure(self.sac_agent, sac_dim)
+        self.contract.dqn_agent_structure(self.dqn_agent, local_dim)
+        manager = CheckpointManager(
+            self.config,
+            sac_agent=self.sac_agent,
+            dqn_agent=self.dqn_agent,
+            mode="hierarchical",
+        )
+        start, global_step = (
+            (0, 0) if self.resume_from is None else manager.load(self.resume_from)
+        )
+        self.contract.finite_hier_parameters(self.sac_agent, self.dqn_agent)
+        if step_budget is not None and global_step > step_budget:
+            raise ValueError("Checkpoint exceeds requested physical step budget")
+        if step_budget is None and start > episodes:
+            raise ValueError("Checkpoint episode exceeds requested total")
+        artifacts = ResultArtifacts(self.output_dir, run_name=self.model_name)
+        metrics_path = artifacts.prepare_metrics(resume=self.resume_from is not None)
+        mode = manager.prepare_metrics(metrics_path, start)
+        history = []
+        with metrics_path.open(mode, encoding="utf-8") as stream:
+            for episode in range(
+                start, step_budget if step_budget is not None else episodes
+            ):
+                if step_budget is not None and global_step >= step_budget:
+                    break
+                episode_limit = (
+                    steps
+                    if step_budget is None
+                    else min(steps, step_budget - global_step)
                 )
-                resume_target = next(
-                    (candidate for candidate in resume_candidates if candidate.is_file()),
-                    self.resume_from,
+                scenario_seed = episode_scenario_seed(self.config, self.seed, episode)
+                self.env.reset(seed=scenario_seed)
+                pending = None
+                sums, counts = {}, {}
+                total_return, count = 0.0, 0
+                sac_rewards, dqn_losses, sac_actor_losses, sac_critic_losses = (
+                    [],
+                    [],
+                    [],
+                    [],
                 )
-                start_episode, global_step = checkpoint_manager.load(resume_target)
-                self.contract.finite_hier_parameters(self.sac_agent, self.dqn_agent)
-                self._restore_after_resume(resume_target.parent, start_episode)
-
-            if start_episode > episodes_to_run:
-                raise ValueError(
-                    "Checkpoint episode exceeds hierarchical_parameters total_episodes"
-                )
-
-            file_mode = checkpoint_manager.prepare_metrics(metrics_path, start_episode)
-            history: list[dict[str, Any]] = []
-            expected_sac_action_dim = int(self.sac_agent.action_dim)
-
-            with metrics_path.open(file_mode, encoding="utf-8") as metrics_file:
-                for episode in range(start_episode, episodes_to_run):
-                    local_obs, global_state = self._reset_environment(
-                        self.seed + episode
+                terminated, truncated = False, False
+                final_info = {}
+                while count < episode_limit and not (terminated or truncated):
+                    ss = self.env.get_sac_state()
+                    raw = self.contract.sac_action(
+                        self.sac_agent.select_action(ss), self.sac_agent.action_dim
                     )
-                    reset_dims = self.contract.observation_dimensions(
-                        local_obs, global_state
+                    frame_steps = min(self.subframes_per_frame, episode_limit - count)
+                    self.env.begin_frame(
+                        sac_ratios(raw, self.env.BWP_slice.shape, self.single_bwp_mode),
+                        num_subframes=frame_steps,
                     )
-                    if reset_dims != (local_obs_dim, global_state_dim):
-                        raise ValueError(
-                            "observation dimensions changed between episodes: "
-                            f"expected {(local_obs_dim, global_state_dim)}, "
-                            f"received {reset_dims}"
+                    # The last transition of a frame receives the next frame's
+                    # actual quota before entering replay, never unlimited caps.
+                    if pending is not None:
+                        self._store_dqn(
+                            pending,
+                            self.env.get_dqn_state(),
+                            self.env.budget,
+                            global_step,
+                            dqn_losses,
                         )
-
-                    s_sac, ep_sac_dim = self.contract.sac_state(
-                        self.env.get_sac_state()
-                    )
-                    if ep_sac_dim != sac_state_dim:
-                        raise ValueError(
-                            "SAC state dimension changed between episodes: "
-                            f"expected {sac_state_dim}, got {ep_sac_dim}"
+                        pending = None
+                    for _ in range(frame_steps):
+                        state = self.env.get_dqn_state()
+                        budget = self.env.budget.copy()
+                        action = self.contract.dqn_actions(
+                            self.dqn_agent.select_action(
+                                state, budget=budget, bwp_mode=not self.single_bwp_mode
+                            )
                         )
-
-                    episode_return = 0.0
-                    ep_sac_rewards: list[float] = []
-                    ep_dqn_rewards: list[float] = []
-                    ep_dqn_losses: list[float] = []
-                    ep_sac_actor_losses: list[float] = []
-                    ep_sac_critic_losses: list[float] = []
-                    final_info: dict[str, Any] = {}
-                    info_sums: dict[str, float] = {}
-                    info_counts: dict[str, int] = {}
-                    subframe_count = 0
-
-                    while subframe_count < steps_per_episode:
-                        # 1. Macro-timescale: SAC selects BWP PRB budget
-                        s_sac, step_sac_dim = self.contract.sac_state(s_sac)
-                        if step_sac_dim != sac_state_dim:
-                            raise ValueError(
-                                "SAC state dimension changed during episode: "
-                                f"expected {sac_state_dim}, got {step_sac_dim}"
-                            )
-
-                        sac_ratios, sac_raw_action = self.sac_agent.select_action(
-                            s_sac, single_bwp=self.single_bwp_mode
+                        output = self.contract.hier_step_result(
+                            self.env.step(action), local_dim, global_dim
                         )
-                        flat_sac_action = self.contract.sac_action(
-                            np.asarray(sac_ratios, dtype=np.float32).reshape(-1),
-                            expected_dim=expected_sac_action_dim,
-                        )
-
-                        frames_to_run = min(
-                            self.subframes_per_frame,
-                            steps_per_episode - subframe_count,
-                        )
-
-                        if hasattr(self.env, "begin_frame"):
-                            sac_ratios = flat_sac_action.reshape(
-                                self.num_bs, len(self._bwp), self.num_slices
+                        _, _, reward, terminated, env_truncated, final_info = output
+                        self._accumulate_float_info(final_info, sums, counts)
+                        total_return += reward
+                        global_step += 1
+                        count += 1
+                        truncated = bool(env_truncated or count >= episode_limit)
+                        pending = (state, action, reward, terminated, budget)
+                        if not final_info["frame_complete"]:
+                            self._store_dqn(
+                                pending,
+                                self.env.get_dqn_state(),
+                                self.env.budget,
+                                global_step,
+                                dqn_losses,
                             )
-                            self.env.begin_frame(sac_ratios, num_subframes=frames_to_run)
-
-                        terminated = False
-                        truncated = False
-                        frames_ran = 0
-
-                        # 2. Micro-timescale: DQN runs subframes
-                        for _ in range(frames_to_run):
-                            # end_frame() clears env.budget after the last subframe.
-                            budget = np.array(self.env.budget, copy=True)
-                            actions_prb = self._select_dqn_actions(
-                                local_obs, global_state, budget
-                            )
-
-                            step_out = self.env.step(actions_prb)
-                            transition = self.contract.hier_step_result(
-                                step_out, local_obs_dim, global_state_dim
-                            )
-                            (
-                                next_local_obs,
-                                next_global_state,
-                                env_reward,
-                                terminated,
-                                env_truncated,
-                                final_info,
-                            ) = transition
-                            self._accumulate_float_info(
-                                final_info, info_sums, info_counts
-                            )
-
-                            r_dqn = float(env_reward)
-                            self.dqn_agent.store_transition(
-                                local_obs,
-                                global_state,
-                                actions_prb,
-                                r_dqn,
-                                next_local_obs,
-                                next_global_state,
-                                float(terminated),
-                                budget,
-                            )
-
-                            dqn_loss = float(self.dqn_agent.update()["dqn/q_loss"])
-                            if not np.isfinite(dqn_loss):
-                                raise FloatingPointError(
-                                    "DQN update returned non-finite loss"
-                                )
-                            if dqn_loss > 0:
-                                ep_dqn_losses.append(dqn_loss)
-                            self.contract.finite_hier_parameters(
-                                self.sac_agent, self.dqn_agent
-                            )
-
-                            ep_dqn_rewards.append(r_dqn)
-                            episode_return += env_reward
-                            local_obs = next_local_obs
-                            global_state = next_global_state
-                            global_step += 1
-                            subframe_count += 1
-                            frames_ran += 1
-
-                            reached_time_limit = subframe_count >= steps_per_episode
-                            truncated = bool(env_truncated or reached_time_limit)
-                            if terminated or truncated:
-                                break
-
-                        # 3. End of Frame: SAC Reward and Update
-                        s_sac_next, next_sac_dim = self.contract.sac_state(
-                            self.env.get_sac_state()
-                        )
-                        if next_sac_dim != sac_state_dim:
-                            raise ValueError(
-                                "SAC state dimension changed during episode: "
-                                f"expected {sac_state_dim}, got {next_sac_dim}"
-                            )
-
-                        if isinstance(final_info.get("frame_summary"), Mapping):
-                            r_sac = float(final_info["frame_summary"]["reward"])
-                        elif getattr(self.env, "last_frame_summary", None) is not None:
-                            r_sac = float(self.env.last_frame_summary["reward"])
-                        else:
-                            r_sac = float(np.mean(ep_dqn_rewards[-frames_ran:]))
-                        if not np.isfinite(r_sac):
-                            raise ValueError("SAC reward must be finite")
-
-                        ep_sac_rewards.append(r_sac)
-                        self.sac_agent.store_transition(
-                            s_sac,
-                            sac_raw_action,
-                            r_sac,
-                            s_sac_next,
-                            float(terminated),
-                        )
-
-                        if len(self.sac_agent.replay_buffer) >= max(
-                            self.sac_agent.warmup_steps, self.sac_agent.batch_size
-                        ):
-                            sac_metrics = self.sac_agent.update()
-                            actor_loss_val = float(sac_metrics["sac/actor_loss"])
-                            critic_loss_val = float(sac_metrics["sac/critic_loss"])
-                            if not (
-                                np.isfinite(actor_loss_val)
-                                and np.isfinite(critic_loss_val)
-                            ):
-                                raise FloatingPointError(
-                                    "SAC update returned non-finite loss"
-                                )
-                            ep_sac_actor_losses.append(actor_loss_val)
-                            ep_sac_critic_losses.append(critic_loss_val)
-                            self.contract.finite_hier_parameters(
-                                self.sac_agent, self.dqn_agent
-                            )
-
-                        s_sac = s_sac_next
+                            pending = None
+                        if self.epsilon_decay_unit == "subframe":
+                            self.dqn_agent.decay_epsilon()
                         if terminated or truncated:
                             break
-
-                    self.dqn_agent.update_epsilon()
-
-                    mean_sac_r = (
-                        float(np.mean(ep_sac_rewards)) if ep_sac_rewards else 0.0
-                    )
-                    mean_dqn_r = (
-                        float(np.mean(ep_dqn_rewards)) if ep_dqn_rewards else 0.0
-                    )
-                    mean_dqn_loss = (
-                        float(np.mean(ep_dqn_losses)) if ep_dqn_losses else 0.0
-                    )
-                    mean_sac_actor_loss = (
-                        float(np.mean(ep_sac_actor_losses))
-                        if ep_sac_actor_losses
-                        else 0.0
-                    )
-                    mean_sac_critic_loss = (
-                        float(np.mean(ep_sac_critic_losses))
-                        if ep_sac_critic_losses
-                        else 0.0
-                    )
-                    dqn_eps = float(getattr(self.dqn_agent, "epsilon", 0.0))
-                    sac_alpha = float(getattr(self.sac_agent, "alpha", 0.0))
-
-                    record: dict[str, Any] = {
-                        **self._serializable_info(final_info),
-                        **self._mean_float_info(info_sums, info_counts),
-                        "episode": episode + 1,
-                        "global_step": global_step,
-                        "episode_return": float(episode_return),
-                        "episode_length": subframe_count,
-                        "mean_sac_reward": mean_sac_r,
-                        "mean_dqn_reward": mean_dqn_r,
-                        "sac_actor_loss": mean_sac_actor_loss,
-                        "sac_critic_loss": mean_sac_critic_loss,
-                        "sac_alpha": sac_alpha,
-                        "dqn_loss": mean_dqn_loss,
-                        "dqn_epsilon": dqn_eps,
-                    }
-                    history.append(record)
-                    metrics_file.write(json.dumps(record, ensure_ascii=False) + "\n")
-                    metrics_file.flush()
-
-                    if (episode + 1) % self.log_interval == 0:
-                        print(
-                            f"episode={episode + 1}/{episodes_to_run} "
-                            f"steps={global_step} return={episode_return:.6f} "
-                            f"length={subframe_count} sac_r={mean_sac_r:.3f} "
-                            f"dqn_r={mean_dqn_r:.3f} dqn_loss={mean_dqn_loss:.4f} "
-                            f"eps={dqn_eps:.3f}"
+                    summary = self.env.last_frame_summary
+                    if summary is None:
+                        raise RuntimeError("Frame finished without a summary")
+                    ss_next = self.env.get_sac_state()
+                    sr = float(summary["reward"])
+                    sac_rewards.append(sr)
+                    self.sac_agent.replay_buffer.push(ss, raw, sr, ss_next, terminated)
+                    for _ in range(
+                        self.config["hierarchical_parameters"]["sac"].get(
+                            "updates_per_frame", 1
                         )
-
-                    if (
-                        self.save_interval > 0
-                        and (episode + 1) % self.save_interval == 0
-                    ) or episode + 1 == episodes_to_run:
-                        checkpoint_manager.save(
-                            checkpoint_dir / f"episode_{episode + 1:06d}.pt",
-                            episode,
-                            global_step,
-                        )
-                        self._save_sac_replay(checkpoint_dir, episode + 1)
-
-            figure_paths = artifacts.render(metrics_path)
-            print(
-                f"figures saved to {artifacts.figures_dir} "
-                f"({len(figure_paths)} PNG files)"
-            )
-            if hasattr(self.env, "plot_sensing_resource_usage"):
-                try:
-                    plot_fn = self.env.plot_sensing_resource_usage
-                    try:
-                        plot_params = inspect.signature(plot_fn).parameters
-                    except (TypeError, ValueError):
-                        plot_params = {}
-                    accepts_save_dir = "save_dir" in plot_params or any(
-                        parameter.kind == inspect.Parameter.VAR_KEYWORD
-                        for parameter in plot_params.values()
+                    ):
+                        sm = self.sac_agent.update()
+                        if sm["updated"]:
+                            sac_critic_losses.append(sm["sac_critic_loss"])
+                        if sm["actor_updated"]:
+                            sac_actor_losses.append(sm["sac_actor_loss"])
+                if pending is not None:
+                    self._bootstrap_dqn(
+                        pending, self.env.get_sac_state(), global_step, dqn_losses
                     )
-                    if accepts_save_dir:
-                        plot_fn(save_dir=str(artifacts.figures_dir))
-                    else:
-                        plot_fn()
-                except Exception as exc:
-                    print(f"Warning: could not plot sensing resource usage: {exc}")
-            return history
-        finally:
-            if self._owns_environment and callable(getattr(self.env, "close", None)):
-                self.env.close()
+                if self.epsilon_decay_unit == "episode":
+                    self.dqn_agent.decay_epsilon()
+                self.contract.finite_hier_parameters(self.sac_agent, self.dqn_agent)
+                duration = count * self.config["system_parameters"]["slot_duration_ms"] / 1000.0
+                record = {
+                    **self._serializable_info(final_info),
+                    **self._mean_float_info(sums, counts),
+                    "episode": episode + 1,
+                    "scenario_seed": scenario_seed,
+                    "global_step": global_step,
+                    "episode_return": float(total_return),
+                    "episode_length": count,
+                    "time_seconds": duration,
+                    "episode_duration_seconds": duration,
+                    "mean_sac_reward": float(np.mean(sac_rewards)),
+                    "mean_dqn_reward": float(total_return / count),
+                    "dqn_loss": float(np.mean(dqn_losses)) if dqn_losses else None,
+                    "sac_actor_loss": float(np.mean(sac_actor_losses))
+                    if sac_actor_losses
+                    else None,
+                    "sac_critic_loss": float(np.mean(sac_critic_losses))
+                    if sac_critic_losses
+                    else None,
+                    "sac_alpha": self.sac_agent.alpha,
+                    "dqn_epsilon": self.dqn_agent.epsilon,
+                    "episode_dqn_updates": len(dqn_losses),
+                    "episode_sac_critic_updates": len(sac_critic_losses),
+                    "episode_sac_actor_updates": len(sac_actor_losses),
+                    "sac_updates": self.sac_agent.update_step,
+                    "dqn_updates": self.dqn_agent.update_step,
+                }
+                history.append(record)
+                stream.write(
+                    json.dumps(record, ensure_ascii=False, allow_nan=False) + "\n"
+                )
+                stream.flush()
+                if (episode + 1) % self.train_cfg["log_interval"] == 0:
+                    print(
+                        f"episode={episode + 1} steps={global_step} return={total_return:.6f} "
+                        f"updates(dqn/sac_critic/sac_actor)="
+                        f"{len(dqn_losses)}/{len(sac_critic_losses)}/{len(sac_actor_losses)}"
+                    )
+                interval = self.train_cfg["save_interval"]
+                if (interval > 0 and (episode + 1) % interval == 0) or (
+                    global_step >= step_budget
+                    if step_budget is not None
+                    else episode + 1 == episodes
+                ):
+                    manager.save(
+                        self.output_dir
+                        / "checkpoints"
+                        / self.model_name
+                        / f"episode_{episode + 1:06d}.pt",
+                        episode,
+                        global_step,
+                    )
+        artifacts.render(metrics_path)
+        return history
 
     @staticmethod
     def _seed_everything(seed: int) -> None:
@@ -650,7 +364,10 @@ class HierarchicalISACTrainer:
     ) -> None:
         """Accumulate finite floating-point environment metrics."""
         for key, value in info.items():
-            if not isinstance(value, (float, np.floating)) or not np.isfinite(value):
+            packet_count = key in ("urllc_completed_packets", "urllc_on_time_packets")
+            if not (packet_count or isinstance(value, (float, np.floating))):
+                continue
+            if not np.isfinite(value):
                 continue
             name = str(key)
             sums[name] = sums.get(name, 0.0) + float(value)
@@ -659,16 +376,25 @@ class HierarchicalISACTrainer:
     @staticmethod
     def _mean_float_info(
         sums: Mapping[str, float], counts: Mapping[str, int]
-    ) -> dict[str, float]:
+    ) -> dict[str, float | int | None]:
         """Compute episode means for accumulated environment metrics."""
-        return {
+        result = {
             name: total / counts[name]
             for name, total in sums.items()
             if counts.get(name, 0) > 0
         }
-
-
-if __name__ == "__main__":
-    from ppo.train_hierarchical import main
-
-    main()
+        if "urllc_completed_packets" in sums:
+            packets = sums["urllc_completed_packets"]
+            result["mean_urllc_latency_ms"] = (
+                sums.get("urllc_completed_latency_sum_ms", 0.0) / packets
+                if packets
+                else None
+            )
+            result["urllc_completed_packets"] = int(packets)
+            result["urllc_on_time_packets"] = int(
+                sums.get("urllc_on_time_packets", 0.0)
+            )
+            result["urllc_completed_latency_sum_ms"] = sums.get(
+                "urllc_completed_latency_sum_ms", 0.0
+            )
+        return result

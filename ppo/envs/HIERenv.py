@@ -23,23 +23,7 @@ class HierISACEnv(BaseISACEnv):
             num_subframes = self.config["system_parameters"]["simulation"]["num_subframes_per_frame"]
         if isinstance(num_subframes, bool) or not isinstance(num_subframes, (int, np.integer)) or num_subframes <= 0:
             raise ValueError("num_subframes must be a positive integer")
-        ratios = np.asarray(ratios, dtype=float)
-        if ratios.shape != self.BWP_slice.shape or not np.isfinite(ratios).all() or np.any(ratios < 0):
-            raise ValueError("SAC ratios must be finite non-negative [B,W,M+S]")
-        if not self.bwp_mode and np.any(np.count_nonzero(ratios, axis=1) > 1):
-            raise ValueError("single-BWP SAC ratios must select at most one BWP per service")
-        # Scale first to avoid overflow when summing large valid ratios.
-        scale = ratios.max(axis=2, keepdims=True)
-        scaled = np.divide(ratios, scale, out=np.zeros_like(ratios), where=scale > 0)
-        total = scaled.sum(axis=2, keepdims=True)
-        self.frame_ratios = np.divide(scaled, total, out=np.zeros_like(ratios), where=total > 0)
-        ideal = self.frame_ratios * np.asarray(self.nPrb)[None, :, None]
-        quota = np.floor(ideal).astype(np.int64)
-        remaining = np.where(total[:, :, 0] > 0, np.asarray(self.nPrb)[None, :] - quota.sum(axis=2), 0)
-        # Stable ties follow target/slice column order; zero-weight rows stay idle.
-        order = np.argsort(-(ideal - quota), axis=2, kind="stable")
-        rank = np.argsort(order, axis=2)
-        quota += rank < remaining[:, :, None]
+        quota, self.frame_ratios = self.apportion_budget(ratios)
         self.set_budget(quota)
         self._frame_length = int(num_subframes)
         self._uses_frames = True
@@ -51,6 +35,27 @@ class HierISACEnv(BaseISACEnv):
         self._frame_service = np.zeros(self.num_slices)
         self.last_frame_summary = None
         return quota.copy()
+
+    def apportion_budget(self, ratios):
+        """Return integer quotas and normalized ratios without starting a frame."""
+        ratios = np.asarray(ratios, dtype=float)
+        if ratios.shape != self.BWP_slice.shape or not np.isfinite(ratios).all() or np.any(ratios < 0):
+            raise ValueError("SAC ratios must be finite non-negative [B,W,M+S]")
+        if not self.bwp_mode and np.any(np.count_nonzero(ratios, axis=1) > 1):
+            raise ValueError("single-BWP SAC ratios must select at most one BWP per service")
+        # Scale first to avoid overflow when summing large valid ratios.
+        scale = ratios.max(axis=2, keepdims=True)
+        scaled = np.divide(ratios, scale, out=np.zeros_like(ratios), where=scale > 0)
+        total = scaled.sum(axis=2, keepdims=True)
+        frame_ratios = np.divide(scaled, total, out=np.zeros_like(ratios), where=total > 0)
+        ideal = frame_ratios * np.asarray(self.nPrb)[None, :, None]
+        quota = np.floor(ideal).astype(np.int64)
+        remaining = np.where(total[:, :, 0] > 0, np.asarray(self.nPrb)[None, :] - quota.sum(axis=2), 0)
+        # Stable ties follow target/slice column order; zero-weight rows stay idle.
+        order = np.argsort(-(ideal - quota), axis=2, kind="stable")
+        rank = np.argsort(order, axis=2)
+        quota += rank < remaining[:, :, None]
+        return quota, frame_ratios
 
     def step(self, actions_prb):
         if getattr(self, "_uses_frames", False) and self._frame_steps is None:
@@ -97,53 +102,7 @@ class HierISACEnv(BaseISACEnv):
         return summary
 
     def _get_global_state(self):
-        """
-        Construct the subframe-level global state S_t (DQN / centralized critic):
-        S_t = [ {U~_m^pos}, {U~_m^vel}, {A~_m}, {d~_{b,m}^pred},
-                {H~_{b,k}^avg}, {H~_{b,m}^avg}, {P~_b^res}, {N~_b^res} ]
-
-        Total dimension: 3*M + 2*B*M + B*K + 2*B.
-
-        Returns:
-            global_state (np.ndarray): Shape [global_state_dim]
-        """
-        # 1. Uncertainty & AoI: [M], [M], [M]
-        u_pos, u_vel = self._get_uncertainty_summary()
-        u_pos_norm = np.clip(u_pos / self.u_pos_max, 0.0, 1.0).astype(np.float32)
-        u_vel_norm = np.clip(u_vel / self.u_vel_max, 0.0, 1.0).astype(np.float32)
-        aoi_norm = np.clip(self.aoi / self.a_max, 0.0, 1.0).astype(np.float32)
-
-        # 2. Predicted relative distances d~_{b,m}^pred: [B * M]
-        pred_target_pos = self.pred_target_states[:, :3]
-        d_pred = np.zeros((self.num_bs, self.num_targets), dtype=np.float32)
-        for b in range(self.num_bs):
-            for m in range(self.num_targets):
-                dist = float(np.linalg.norm(pred_target_pos[m] - self.bs_positions[b]))
-                d_pred[b, m] = np.clip(dist / self.d_max, 0.0, 1.0)
-        d_pred_flat = d_pred.flatten()
-
-        # 3. Spectral efficiency features normalized to [0, 1]: [B * K] and [B * M]
-        h_comm_norm = np.clip(self.last_h_comm / self.se_comm_scale, 0.0, 1.0).astype(np.float32)
-        h_sens_norm = np.clip(self.last_h_sens / self.se_sens_scale, 0.0, 1.0).astype(np.float32)
-        h_comm_flat = h_comm_norm.flatten()
-        h_sens_flat = h_sens_norm.flatten()
-
-        # 4. Residual resources: [B] and [B]
-        p_res_norm = np.clip(self.p_res / self.p_max, 0.0, 1.0).astype(np.float32)
-        n_res_norm = np.clip(self.n_res / self.total_prb, 0.0, 1.0).astype(np.float32)
-
-        global_state = np.concatenate([
-            u_pos_norm,     # [M]
-            u_vel_norm,     # [M]
-            aoi_norm,       # [M]
-            d_pred_flat,    # [B * M]
-            h_comm_flat,    # [B * K]
-            h_sens_flat,    # [B * M]
-            p_res_norm,     # [B]
-            n_res_norm      # [B]
-        ]).astype(np.float32)
-
-        return global_state
+        return self._get_local_observations().ravel()
 
     @property
     def sac_state_dim(self):

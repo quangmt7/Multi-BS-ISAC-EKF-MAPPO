@@ -82,11 +82,9 @@ class BaseISACEnv(ABC):
                self.max_ue_delay, self.p_min_sensing) <= 0:
             raise ValueError("normalization scales and QoS thresholds must be positive")
         penalties = mappo_cfg["penalties"]
-        self.c2 = float(penalties.get("c2_sensing_reliability", 0.))
-        self.c3 = float(penalties.get("c3_pos_uncertainty", 0.))
-        self.c4 = float(penalties.get("c4_vel_uncertainty", 0.))
-        self.c5 = float(penalties.get("c5_sens_freq", 0.))
-        self.aoi_thr = float(penalties.get("aoi_thr", 0.))
+        self.c1_position = penalties["c1_position"]
+        self.c2_velocity = penalties["c2_velocity"]
+        self.c3_service = penalties["c3_service"]
         self.se_comm_scale = float(np.log2(1 + sys_config["sinr"]["gamma_c_min_linear"]))
         self.se_sens_scale = float(np.log2(1 + sys_config["sinr"]["gamma_s_min_linear"]))
 
@@ -135,6 +133,7 @@ class BaseISACEnv(ABC):
             np.random.seed(seed)
         self.channel.rng = np.random.default_rng(seed)
         self.current_step = 0
+        self.measurement_seed = int(np.random.SeedSequence(seed).generate_state(1)[0])
         data = self.scenario.reset(seed=seed)
         self.bs_positions = data["bs_positions"]
         self.ue_positions = data["ue_positions"]
@@ -144,6 +143,7 @@ class BaseISACEnv(ABC):
         self.aoi = np.zeros(self.num_targets, dtype=float)
         self.prob_suc = np.zeros(self.num_targets, dtype=float)
         self.detect_mask = np.zeros((self.num_bs, self.num_targets), dtype=bool)
+        self.last_measurements = [[] for _ in range(self.num_targets)]
         for b, measurement in enumerate(self.measurement_list):
             measurement.update_bs_pos(self.bs_positions[b])
         self.ekf_common.update_state(self._sample_initial_estimates(self.target_states, seed))
@@ -265,7 +265,13 @@ class BaseISACEnv(ABC):
         pi = np.asarray(self.served_ues, dtype=float)
         allocation_ratio = float(pi[self.ue_mask].sum() / self.ue_mask.sum()) if self.ue_mask.any() else 0.
         reward, terms = self._reward_components(self.aoi, u_pos, u_vel, normalized_cost, [allocation_ratio])
-        return reward, reward, 0., dict(terms, reward=reward, r_penalty=0.,
+        pos_excess = np.maximum(0., u_pos / self.u_pos_max - 1.)
+        vel_excess = np.maximum(0., u_vel / self.u_vel_max - 1.)
+        penalty = float(self.c1_position * np.mean(pos_excess ** 2)
+                        + self.c2_velocity * np.mean(vel_excess ** 2)
+                        + self.c3_service * (1. - allocation_ratio) ** 2)
+        net_reward = reward - penalty
+        return net_reward, reward, penalty, dict(terms, reward=net_reward, r_penalty=penalty,
             norm_aoi=float(np.mean(self.aoi) / self.a_max), cost=np.asarray(cost).copy(),
             normalized_cost=normalized_cost, suc_embb=float(pi[:self.num_embb].sum() / (self.num_embb*self.num_ue_1embb)),
             suc_urllc=float(pi[self.num_embb:].sum() / (self.num_urllc*self.num_ue_1urllc)))
@@ -330,19 +336,25 @@ class BaseISACEnv(ABC):
         self.last_h_sens = np.log2(1 + channel_out["sensing_sinr_prb"]).sum(axis=(1, 3)) / self.total_prb
         self.prob_suc.fill(0.)
         self.detect_mask.fill(False)
+        self.last_measurements = [[] for _ in range(self.num_targets)]
         effective_sinr = channel_out["effective_sensing_sinr"]
         for m in range(self.num_targets):
             measurements, miss_probability = [], 1.
             for b in range(self.num_bs):
                 if effective_sinr[b, m] <= 0:
                     continue
-                detected, p_d = self.detection_list[b].detect(effective_sinr[b, m])
+                # Keyed streams keep one pair's detection/noise independent of
+                # how many other pairs were scheduled or detected.
+                pair_rng = np.random.default_rng(np.random.SeedSequence(
+                    [self.measurement_seed, self.current_step, b, m]))
+                detected, p_d = self.detection_list[b].detect(effective_sinr[b, m], rng=pair_rng)
                 miss_probability *= 1 - p_d
                 self.detect_mask[b, m] = detected
                 if detected:
                     measurement, covariance = self.measurement_list[b].gen_meas(
-                        self.target_states[m], effective_sinr[b, m])
+                        self.target_states[m], effective_sinr[b, m], rng=pair_rng)
                     measurements.append((self.bs_positions[b], measurement, covariance))
+                    self.last_measurements[m].append((b, measurement.copy(), covariance.copy()))
             self.prob_suc[m] = 1 - miss_probability
             if measurements:
                 self.ekf_common.update(m, measurements)
@@ -353,12 +365,12 @@ class BaseISACEnv(ABC):
         self.last_u_pos, self.last_u_vel = u_pos.copy(), u_vel.copy()
         self.cost_by_bs = self._costs_by_bs(x_c, x_s)
         cost = self.cost_by_bs.sum(axis=0)
-        reward, _, _, reward_info = self._compute_reward(
+        reward, _, penalty, reward_info = self._compute_reward(
             self.eMBB_Thr, latency_ms, cost, self.prob_suc, u_pos, u_vel)
         local_rewards = np.array([self._reward_components(
             self.aoi, u_pos, u_vel,
             np.divide(row, self.cost_max_local, out=np.zeros_like(self.cost_max_local), where=self.cost_max_local > 0),
-            [float(self.served_ues[self.ue_mask].mean()) if self.ue_mask.any() else 0.])[0] for row in self.cost_by_bs])
+            [float(self.served_ues[self.ue_mask].mean()) if self.ue_mask.any() else 0.])[0] - penalty for row in self.cost_by_bs])
         self.aoi_norm.append(float(np.mean(self.aoi) / self.a_max))
         self.prb.append(float(x_s.sum() / (self.num_bs * self.total_prb)))
         self.power.append(float(np.sum(x_s * self.pEach[None, :, None, None]) / (self.num_bs * self.p_max)))
@@ -381,8 +393,12 @@ class BaseISACEnv(ABC):
             "qos_URLLC_rate": float(urllc_qos.mean()) if urllc_qos.size else 0.,
             "mean_embb_rate_mbps": float(np.mean(self.eMBB_Thr) / 1e6),
             "comm_rate_mean_mbps": float((self.eMBB_Thr.sum() + current_bits.sum() / self.slot_duration) / (self.num_ue * 1e6)),
-            "qos_satisfaction_rate": float((np.sum(self.eMBB_Thr >= self.r_min * 1e6) + np.sum(latency_ms <= self.max_ue_delay)) / self.num_ue),
-            "mean_urllc_latency_ms": float(np.mean(latency_ms)),
+            "qos_satisfaction_rate": float(self.qos_served_ues[self.ue_mask].mean()),
+            "mean_urllc_packet_age_ms": float(np.mean(latency_ms)),
+            "mean_urllc_latency_ms": float(completed_latency[completed].mean()) if completed.any() else float("nan"),
+            "urllc_completed_packets": int(completed.sum()),
+            "urllc_on_time_packets": int((completed & (latency_ms <= self.max_ue_delay)).sum()),
+            "urllc_completed_latency_sum_ms": float(np.nansum(completed_latency)),
             "urllc_bits_step": current_bits.copy(), "urllc_packet_completed": completed,
             "urllc_completed_latency_ms": completed_latency,
             "urllc_completed_on_time": completed & (latency_ms <= self.max_ue_delay),
@@ -404,24 +420,40 @@ class BaseISACEnv(ABC):
         return self._get_uncertainty_summary()
 
     def _get_local_observations(self):
-        """Build normalized per-BS observations from tracking and channel features."""
-        u_pos, u_vel = self._get_uncertainty_summary()
-        target_pos = self.pred_target_states[:, :3]
-        t_frac = self.current_step / self.max_steps
-        common = [np.clip(u_pos / self.u_pos_max, 0, 1),
-                  np.clip(u_vel / self.u_vel_max, 0, 1),
+        """Approach features per BS, followed by scheduler/packet context.
+
+        Prefix: eMBB rate/Rmin, URLLC age/deadline, AoI, position/velocity
+        uncertainty, log2(1+mean eMBB SINR), minimum URLLC/target SINR, 3 costs.
+        Idle PRBs participate in SINR reductions; padded PRBs/UEs do not.
+        Quotas, activation history and packet progress describe future actions
+        and switching costs without exposing unobserved true target states.
+        """
+        up, uv = self._get_uncertainty_summary()
+        common = [self.eMBB_Thr.ravel() / (self.r_min * 1e6),
+                  self.URLLC_Latency.ravel() / self.max_ue_delay,
                   np.clip(self.aoi / self.a_max, 0, 1),
-                  np.clip(target_pos / self.d_max, -1, 1).ravel()]
+                  np.clip(up / self.u_pos_max, 0, 1),
+                  np.clip(uv / self.u_vel_max, 0, 1)]
+        caps = self.budget
+        if caps is None:
+            caps = np.broadcast_to(np.asarray(self.nPrb)[None,:,None], self.BWP_slice.shape)
+        norm_caps = caps / np.asarray(self.nPrb)[None,:,None]
+        norm_cost = np.divide(self.cost_by_bs, self.cost_max_local,
+                             out=np.zeros_like(self.cost_by_bs), where=self.cost_max_local > 0)
         observations = []
         for b in range(self.num_bs):
             observations.append(np.concatenate(common + [
-                np.clip(np.linalg.norm(target_pos - self.bs_positions[b], axis=1) / self.d_max, 0, 1),
-                np.clip(self.last_h_comm[b] / self.se_comm_scale, 0, 1),
-                np.clip(self.last_h_sens[b] / self.se_sens_scale, 0, 1),
-                np.clip(self.bs_positions[b] / self.d_max, -1, 1),
-                [self.p_res[b] / self.p_max, self.n_res[b] / self.total_prb,
-                 t_frac, np.sin(2*np.pi*t_frac), np.cos(2*np.pi*t_frac)]]))
+                np.log2(1 + self.sinr_comm_mean[b,:self.num_embb,:self.num_ue_1embb]).ravel() / self.se_comm_scale,
+                np.log2(1 + self.sinr_comm_min[b,self.num_embb:,:self.num_ue_1urllc]).ravel() / self.se_comm_scale,
+                np.log2(1 + self.sinr_sensing_min[b]) / self.se_sens_scale,
+                norm_cost[b], norm_caps[b].ravel(), self.BWP_slice[b].ravel(),
+                self.numBit.ravel() / self.required_bits_urllc,
+                self.bs_positions[b] / self.d_max,
+                [self.current_step / self.max_steps]]))
         return np.asarray(observations, dtype=np.float32)
+
+    def get_dqn_state(self):
+        return self._get_local_observations()
 
     def _costs_by_bs(self, x_c, x_s):
         return np.column_stack((self._energy_by_bs(x_c, x_s),

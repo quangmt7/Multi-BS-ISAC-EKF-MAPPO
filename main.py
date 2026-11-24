@@ -19,7 +19,7 @@ def parse_args(argv: Sequence[str] | None = None) -> tuple[argparse.Namespace, l
     )
     parser.add_argument(
         "--algo",
-        choices=("ppo", "hierarchical"),
+        choices=("ppo", "hierarchical", "compare"),
         default="ppo",
         help="Training pipeline to run (default: ppo)",
     )
@@ -51,7 +51,10 @@ def parse_args(argv: Sequence[str] | None = None) -> tuple[argparse.Namespace, l
 def main(argv: Sequence[str] | None = None) -> None:
     """Dispatch execution to train_ppo or train_hierarchical."""
     args, remaining = parse_args(argv)
-    if args.algo == "hierarchical":
+    if args.algo == "compare":
+        from benchmark.compare import main as compare_main
+        compare_main(remaining)
+    elif args.algo == "hierarchical":
         train_hierarchical_main(remaining)
     else:
         train_ppo_main(remaining)

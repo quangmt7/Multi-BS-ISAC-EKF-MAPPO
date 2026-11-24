@@ -191,49 +191,16 @@ class RuntimeContract:
             raise ValueError(f"PRB actions must be in [0, {self.max_destination}]")
         return prb_array
 
-    def policy_output(
-        self, output: Any
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, float]:
-        """Validate actions, log-probabilities and value from the agent.
-
-        Argument:
-            (output) (Any): Value returned by ``agent.select_action``.
-
-        Return:
-            (policy_output) (tuple): Validated PRB actions, power, log-probability
-                and centralized value.
-        """
-
-        if not isinstance(output, tuple) or len(output) != 4:
-            raise ValueError(
-                "agent.select_action() must return "
-                "(actions_prb, actions_pwr, log_probs, value)"
-            )
-
-        actions_prb = self._validate_prb_actions(output[0])
-        actions_pwr = self._to_float32_array(output[1], "power actions")
-        log_probs = self._to_float32_array(output[2], "log-probabilities")
-        value = self._finite_scalar(
-            output[3], "centralized critic value must be one finite scalar"
-        )
-        expected_shape = (self.num_bs, self.num_prb)
-
-        if actions_pwr.shape != expected_shape:
-            raise ValueError(
-                f"power action shape must be {expected_shape}, got {actions_pwr.shape}"
-            )
-        if not np.all(np.isfinite(actions_pwr)):
-            raise ValueError("power actions contain NaN or Inf")
-        if np.any(actions_pwr < 0.0) or np.any(actions_pwr > 1.0):
-            raise ValueError(
-                "power actions must be normalized to [0, 1] before action mapping"
-            )
-        if log_probs.shape != (self.num_bs,) or not np.all(np.isfinite(log_probs)):
-            raise ValueError(
-                f"log-probabilities must be finite with shape ({self.num_bs},)"
-            )
-
-        return actions_prb, actions_pwr, log_probs, value
+    def policy_output(self, output):
+        """Validate PRB actions, per-BS log-probabilities and centralized value."""
+        if not isinstance(output, tuple) or len(output) != 3:
+            raise ValueError("agent.select_action must return (actions_prb, log_probs, value)")
+        actions = self._validate_prb_actions(output[0])
+        logp = self._to_float32_array(output[1], "log-probabilities")
+        if logp.shape != (self.num_bs,) or not np.isfinite(logp).all():
+            raise ValueError("Log-probabilities must be finite with shape [BS]")
+        value = self._finite_scalar(output[2], "Centralized value must be finite")
+        return actions, logp, value
 
     def agent_structure(
         self, agent: Any, local_obs_dim: int, global_state_dim: int
@@ -296,7 +263,7 @@ class RuntimeContract:
             (expected_dim) (int | None): Optional expected flattened length.
 
         Return:
-            (validated) (np.ndarray): Float32 1D non-negative finite action vector.
+            (validated) (np.ndarray): Float32 1D raw tanh action vector in [-1,1].
         """
 
         action_array = self._finite_1d_float32(action, "SAC action")
@@ -305,8 +272,8 @@ class RuntimeContract:
                 f"SAC action dimension mismatch: expected {int(expected_dim)}, "
                 f"got {action_array.size}"
             )
-        if np.any(action_array < 0.0):
-            raise ValueError("SAC action must contain only non-negative values")
+        if np.any(np.abs(action_array) > 1.0):
+            raise ValueError("Raw SAC action must lie in [-1,1]")
         return action_array
 
     def dqn_actions(self, actions_prb: Any) -> np.ndarray:

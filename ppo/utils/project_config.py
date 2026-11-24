@@ -3,10 +3,37 @@
 from __future__ import annotations
 
 from pathlib import Path
+import copy
 from typing import Any, Mapping
 
 import numpy as np
 import yaml
+
+
+def episode_scenario_seed(config, seed, episode):
+    """Partition scenario seeds across comparison runs and reserve evaluation seeds."""
+    plan = config.get("comparison_seeds")
+    if not plan:
+        return (seed + episode) % (2**32)
+    if episode == 0:
+        return seed
+    starts = plan["training"]
+    # Enumerate the non-reserved seeds in round-robin order by training run.
+    candidate = (episode - 1) * len(starts) + starts.index(seed)
+    for reserved in sorted(starts + plan["evaluation"]):
+        if candidate < reserved:
+            break
+        candidate += 1
+    if candidate >= 2**32:
+        raise ValueError("Comparison exhausted its distinct scenario seeds")
+    return candidate
+
+
+def hier_hidden_dims(settings):
+    """Older configurations use one width for both hidden layers."""
+    if "hidden_dims" in settings:
+        return settings["hidden_dims"]
+    return [settings.get("hidden_dim", 256)] * 2
 
 
 class ProjectConfig:
@@ -28,11 +55,6 @@ class ProjectConfig:
     HIERARCHICAL_FILE_NAMES = ("system.yaml", "ekf.yaml", "mappo.yaml", "hierarchical.yaml")
     SUPPORTED_MODES = ("mappo", "hierarchical")
 
-    _SAC_REWARD_KEYS = frozenset({"alpha", "beta", "gamma", "lambda_qos"})
-    _DQN_REWARD_KEYS = frozenset(
-        {"alpha", "beta", "gamma", "lambda_qos", "k1", "k2", "k3"}
-    )
-
     def __init__(self, data: Mapping[str, Any], mode: str = "mappo"):
         """Store a configuration mapping and validation mode.
 
@@ -45,7 +67,7 @@ class ProjectConfig:
         """
 
         self._validate_mode(mode)
-        self.data = dict(data)
+        self.data = copy.deepcopy(dict(data))
         self.mode = mode
 
     @classmethod
@@ -276,7 +298,7 @@ class ProjectConfig:
             raise ValueError("Missing or invalid config section: system_parameters.sinr")
         for name in ("gamma_c_min_linear", "gamma_s_min_linear"):
             gamma_val = self._require_finite_number(
-                sinr.get(name), f"system_parameters.sinr.{name}"
+                sinr.get(name), f"system_parameters.sinr.{name}", strictly_positive=True
             )
             if 1.0 + gamma_val <= 0.0:
                 raise ValueError(f"system_parameters.sinr.{name} must satisfy 1 + gamma > 0")
@@ -328,6 +350,7 @@ class ProjectConfig:
 
         for section, names in (
             ("reward_weights", ("alpha_aoi", "beta_uncertainty", "gamma_power", "lambda_service")),
+            ("penalties", ("c1_position", "c2_velocity", "c3_service")),
             ("reward_shaping", ("k_aoi", "k_uncertainty", "k_service")),
         ):
             sub = mappo.get(section)
@@ -350,14 +373,6 @@ class ProjectConfig:
             strictly_positive=True,
         )
 
-        penalties = mappo.get("penalties")
-        if not isinstance(penalties, Mapping):
-            raise ValueError("Missing or invalid config section: mappo_parameters.penalties")
-        for key, value in penalties.items():
-            self._require_finite_number(
-                value, f"mappo_parameters.penalties.{key}", min_value=0.0
-            )
-
         self._validate_interference(system, mappo)
 
     def _validate_training_schedule(
@@ -368,13 +383,17 @@ class ProjectConfig:
         for name in ("total_episodes", "episode_length"):
             self._require_positive_int(training.get(name), f"{prefix}.{name}")
 
+        if "total_steps" in training:
+            self._require_positive_int(training["total_steps"],f"{prefix}.total_steps")
         self._require_non_negative_int(
             training.get("save_interval", 0), f"{prefix}.save_interval"
         )
         self._require_positive_int(
             training.get("log_interval", 1), f"{prefix}.log_interval"
         )
-        self._require_int(training.get("seed", 0), f"{prefix}.seed")
+        seed = self._require_int(training.get("seed", 0), f"{prefix}.seed")
+        if not 0 <= seed < 2**32:
+            raise ValueError(f"{prefix}.seed must be in [0,2**32)")
 
         device = training.get("device", "cpu")
         if device not in ("cpu", "cuda"):
@@ -494,9 +513,9 @@ class ProjectConfig:
                 "mappo_parameters.action_space.num_discrete_choices must equal "
                 f"1 + num_target + total slice UEs = {expected_choices}"
             )
-        if action_space.get("power_action_type", "continuous") != "continuous":
+        if action_space.get("power_action_type") != "fixed":
             raise ValueError(
-                "mappo_parameters.action_space.power_action_type must be 'continuous'"
+                "mappo_parameters.action_space.power_action_type must be 'fixed'"
             )
 
         rollout_threads = training.get("rollout_threads", 1)
@@ -578,8 +597,25 @@ class ProjectConfig:
 
         self._validate_hierarchical_sac(hier)
         self._validate_hierarchical_dqn(hier)
-        if "reward_weights" in hier:
-            self._validate_hierarchical_reward_weights(hier["reward_weights"])
+        if "reward_weights" in hier or "reward_shaping" in hier:
+            raise ValueError("Use mappo_parameters.reward_weights and reward_shaping as the single physical reward configuration")
+
+    @classmethod
+    def _validate_agent_network(cls, settings, prefix):
+        for current, older in (("hidden_dims", "hidden_dim"), ("grad_clip", "max_grad_norm"),
+                               ("warmup_steps", "update_after")):
+            if current in settings and older in settings:
+                raise ValueError(f"{prefix}: specify only one of {current} and {older}")
+        widths = hier_hidden_dims(settings)
+        if not isinstance(widths, (tuple, list)) or len(widths) != 2:
+            raise ValueError(f"{prefix}.hidden_dims must contain two layer widths")
+        for i, width in enumerate(widths):
+            cls._require_positive_int(width, f"{prefix}.hidden_dims[{i}]")
+        for name in ("grad_clip", "max_grad_norm"):
+            if name in settings:
+                cls._require_finite_number(settings[name], f"{prefix}.{name}", strictly_positive=True)
+        if "warmup_steps" in settings:
+            cls._require_non_negative_int(settings["warmup_steps"], f"{prefix}.warmup_steps")
 
     @classmethod
     def _validate_hierarchical_sac(cls, hier: Mapping[str, Any]) -> None:
@@ -589,6 +625,8 @@ class ProjectConfig:
                 "Missing or invalid config section: hierarchical_parameters.sac"
             )
         prefix = "hierarchical_parameters.sac"
+        cls._require_positive_int(sac.get("policy_delay"),f"{prefix}.policy_delay")
+        cls._require_finite_number(sac.get("init_alpha"),f"{prefix}.init_alpha",strictly_positive=True)
 
         for name in ("actor_lr", "critic_lr", "alpha_lr"):
             cls._require_finite_number(
@@ -605,17 +643,20 @@ class ProjectConfig:
         for name in ("batch_size", "replay_capacity"):
             cls._require_positive_int(sac.get(name), f"{prefix}.{name}")
 
-        for opt_int in ("policy_delay", "update_after", "updates_per_frame", "hidden_dim"):
+        cls._validate_agent_network(sac, prefix)
+        for opt_int in ("update_after", "updates_per_frame"):
             if opt_int in sac:
                 cls._require_positive_int(sac[opt_int], f"{prefix}.{opt_int}")
 
-        for opt_pos_float in ("init_alpha", "action_scale"):
-            if opt_pos_float in sac:
-                cls._require_finite_number(
-                    sac[opt_pos_float], f"{prefix}.{opt_pos_float}", strictly_positive=True
-                )
-        if "action_bias" in sac:
-            cls._require_finite_number(sac["action_bias"], f"{prefix}.action_bias")
+        for key, expected in (("action_scale", 1.0), ("action_bias", 0.0)):
+            if key in sac:
+                value = cls._require_finite_number(sac[key], f"{prefix}.{key}")
+                if value != expected:
+                    raise ValueError(f"{prefix}.{key} must be {expected} for raw tanh actions")
+        if sac["replay_capacity"] < sac["batch_size"]:
+            raise ValueError("SAC replay_capacity must be at least batch_size")
+        if sac.get("warmup_steps", sac.get("update_after", 0)) > sac["replay_capacity"]:
+            raise ValueError("SAC warmup exceeds replay capacity in frames")
         if "auto_entropy" in sac and not isinstance(sac["auto_entropy"], bool):
             raise ValueError(f"{prefix}.auto_entropy must be Boolean")
         if "target_entropy" in sac:
@@ -642,8 +683,11 @@ class ProjectConfig:
         for name in ("batch_size", "target_update_freq", "replay_capacity"):
             cls._require_positive_int(dqn.get(name), f"{prefix}.{name}")
 
-        if "hidden_dim" in dqn:
-            cls._require_positive_int(dqn["hidden_dim"], f"{prefix}.hidden_dim")
+        cls._validate_agent_network(dqn, prefix)
+        if "update_after" in dqn:
+            raise ValueError(f"Use {prefix}.warmup_steps in physical subframes")
+        if dqn.get("epsilon_decay_unit", "subframe") not in ("episode", "subframe"):
+            raise ValueError(f"{prefix}.epsilon_decay_unit must be episode or subframe")
 
         eps_start = cls._require_finite_number(
             dqn.get("epsilon_start"), f"{prefix}.epsilon_start", min_value=0.0
@@ -662,33 +706,5 @@ class ProjectConfig:
         cls._require_finite_number(
             dqn.get("epsilon_decay"), f"{prefix}.epsilon_decay", strictly_positive=True
         )
-
-    @classmethod
-    def _validate_hierarchical_reward_weights(cls, reward_weights: Any) -> None:
-        prefix = "hierarchical_parameters.reward_weights"
-        if not isinstance(reward_weights, Mapping):
-            raise ValueError(f"Invalid config section: {prefix}")
-        expected_sections = {"sac", "dqn"}
-        if set(reward_weights.keys()) != expected_sections:
-            raise ValueError(
-                f"{prefix} must contain exact sections {sorted(expected_sections)}"
-            )
-
-        for section_name, expected_keys in (
-            ("sac", cls._SAC_REWARD_KEYS),
-            ("dqn", cls._DQN_REWARD_KEYS),
-        ):
-            section = reward_weights[section_name]
-            if not isinstance(section, Mapping):
-                raise ValueError(f"Invalid config section: {prefix}.{section_name}")
-            if set(section.keys()) != expected_keys:
-                raise ValueError(
-                    f"{prefix}.{section_name} must contain exact keys "
-                    f"{sorted(expected_keys)}"
-                )
-            for key in expected_keys:
-                cls._require_finite_number(
-                    section[key],
-                    f"{prefix}.{section_name}.{key}",
-                    min_value=0.0,
-                )
+        if dqn["epsilon_decay"] > 1 or dqn["replay_capacity"] < dqn["batch_size"]:
+            raise ValueError("DQN epsilon_decay must be <=1 and replay_capacity >= batch_size")

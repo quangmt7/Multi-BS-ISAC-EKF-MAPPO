@@ -1,109 +1,43 @@
+"""PRB-only policy, centralized value network and on-policy rollout storage."""
+
 import numpy as np
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from torch.distributions import Categorical, Normal
-from comUtils.common import get_activation, build_mlp
+from torch import nn
+from comUtils.common import build_mlp
+from ppo.agents.allocation import PRBAllocation
+
 
 class Actor(nn.Module):
-    """
-    Decentralized Actor network with parameter sharing across base stations (BSs).
-    Note:
-        Operates under decentralized execution: each BS executes the policy using only its local observation.
-    """
-    def __init__(self, local_obs_dim, n_prb, num_targets, num_ues, net_conf):
-        """
-        Initialize the Actor network modules and policy heads.
-
-        Argument:
-            local_obs_dim (int): Dimension of the local observation vector for each BS.
-            n_prb (int): Number of Physical Resource Blocks (PRBs) per BS.
-            num_targets (int): Number of mobile sensing targets.
-            num_ues (int): Number of communication users (UEs).
-            net_conf (dict): Network configuration
-
-        Return:
-            None.
-        """
+    def __init__(self, local_obs_dim, config):
         super().__init__()
-        self.n_prb = n_prb
-        self.num_choices = 1 + num_targets + num_ues #number of choice for each prb
-        self.hiddens_dim = net_conf["hidden_dims"]
-        # Use a common function to build the backbone
-        self.backbone, self.out_gain = build_mlp(input_dim=local_obs_dim,
-                                                hiddens_dim=net_conf["hidden_dims"],
-                                                activation=net_conf["activation"],
-                                                use_layer_norm=net_conf["use_layer_norm"],
-                                                orthogonal_init=net_conf["orthogonal_init"],
-                                                gain=net_conf["gain"],
-                                                isActor=True)
-        
-        self.prb_head = nn.Linear(net_conf["hidden_dims"][1], self.n_prb * self.num_choices) # sum of prb choice
-        if net_conf["orthogonal_init"]:
-            nn.init.orthogonal_(self.prb_head.weight, gain=self.out_gain)
+        net = config["mappo_parameters"]["network"]["actor"]
+        self.allocation = PRBAllocation(config)
+        self.n_prb = sum(self.allocation.n_prb)
+        self.num_choices = len(self.allocation.entity_of_destination)
+        self.backbone, gain = build_mlp(
+            input_dim=local_obs_dim,
+            hiddens_dim=net["hidden_dims"],
+            activation=net["activation"],
+            use_layer_norm=net["use_layer_norm"],
+            orthogonal_init=net["orthogonal_init"],
+            gain=net["gain"],
+            isActor=True,
+        )
+        self.prb_head = nn.Linear(net["hidden_dims"][-1], self.n_prb * self.num_choices)
+        if net["orthogonal_init"]:
+            nn.init.orthogonal_(self.prb_head.weight, gain=gain)
             nn.init.zeros_(self.prb_head.bias)
-        #print("n_prb:", self.n_prb)
-        #print("num_choices:", self.num_choices)
-         
-    def forward(self, obs, action_prb=None, action_power=None):
-        """
-        Forward pass for action sampling or evaluating log-probabilities and entropy.
 
-        Argument:
-            obs (torch.Tensor)[batch, local_obs_dim]: Local observation features of the base stations.
-            action_prb (torch.Tensor or None)[batch, n_prb]: Optional discrete PRB actions for evaluation.
-            action_power (torch.Tensor or None)[batch, n_prb]: Optional continuous power actions for evaluation.
-
-        Return:
-            action_prb (torch.Tensor)[batch, n_prb]: Sampled or evaluated discrete PRB selection indices.
-            action_power (torch.Tensor)[batch, n_prb]: Sampled or evaluated continuous normalized power values in [0, 1].
-            total_log_prob (torch.Tensor)[batch]: Sum of log-probabilities for discrete and continuous action heads.
-            total_entropy (torch.Tensor)[batch]: Total policy entropy of discrete and continuous distributions.
-
-        Note:
-            If actions are None, the method samples new actions. If provided, it evaluates their log-probabilities.
-        """
-        # 1. forward through backbone
-        feat = self.backbone(obs)  # [batch, 128]
-
-        # First branch: PRB (discrete)
-        prb_logits = self.prb_head(feat).reshape(-1, self.n_prb, self.num_choices) 
-        prb_dist = Categorical(logits=prb_logits)
-
-        probs = prb_dist.probs
-
-        #print("Mean max probability:", probs.max(dim=-1).values.mean().item())
-        #print("Mean probability:", probs.mean().item())
-        #print("Mean PRB entropy:", prb_dist.entropy().mean().item())
-        
-        if action_prb is None:
-            action_prb = prb_dist.sample() 
-
-        #print("action_prb shape:", action_prb.shape)
-        #print("action_prb min/max:",
-        #    action_prb.min().item(), action_prb.max().item())
-        
-        
-        # Calculate log_prob of PRB branch 
-        logp_prb = prb_dist.log_prob(action_prb).sum(dim=-1)
-        #print("logp_prb mean:", logp_prb.mean().item())
-        #print("logp_prb std:", logp_prb.std().item())
-        entropy_prb = prb_dist.entropy().sum(dim=-1)
-    
-        # Env applies fixed pEach power, so power is a placeholder excluded from logp/entropy.
-        if action_power is None:
-            action_power = torch.ones_like(action_prb, dtype=torch.float32)
-
-        total_log_prob = logp_prb
-        total_entropy = entropy_prb
-
-        #print("prb_logits shape:", prb_logits.shape)
-        #print("entropy per PRB shape:", prb_dist.entropy().shape)
-        #print("entropy_prb:", entropy_prb)
-        #print("entropy_power:", entropy_power)
-        
-        return action_prb, action_power, total_log_prob, total_entropy
-        #logp_prb, logp_power
+    def forward(self, obs, action_prb=None, *, single_bwp=False, deterministic=False):
+        logits = self.prb_head(self.backbone(obs)).reshape(
+            -1, self.n_prb, self.num_choices
+        )
+        return self.allocation(
+            logits,
+            actions=action_prb,
+            single_bwp=single_bwp,
+            deterministic=deterministic,
+        )
 
 
 class Critic(nn.Module):
@@ -114,6 +48,7 @@ class Critic(nn.Module):
     Note:
         Operates under centralized training: accepts global state containing all BSs, targets, and channel info.
     """
+
     def __init__(self, global_state_dim, net_conf):
         """
         Initialize the Centralized Critic network backbone.
@@ -126,18 +61,20 @@ class Critic(nn.Module):
             None.
         """
         super().__init__()
-        self.backbone, self.out_gain = build_mlp(input_dim=global_state_dim,
-                        hiddens_dim=net_conf["hidden_dims"],
-                        activation=net_conf["activation"],
-                        use_layer_norm=net_conf["use_layer_norm"],
-                        orthogonal_init=net_conf["orthogonal_init"],
-                        gain=net_conf["gain"],
-                        isActor=False)
+        self.backbone, self.out_gain = build_mlp(
+            input_dim=global_state_dim,
+            hiddens_dim=net_conf["hidden_dims"],
+            activation=net_conf["activation"],
+            use_layer_norm=net_conf["use_layer_norm"],
+            orthogonal_init=net_conf["orthogonal_init"],
+            gain=net_conf["gain"],
+            isActor=False,
+        )
         self.value_head = nn.Linear(net_conf["hidden_dims"][-1], 1)
         if net_conf["orthogonal_init"]:
             nn.init.orthogonal_(self.value_head.weight, gain=self.out_gain)
             nn.init.zeros_(self.value_head.bias)
-    
+
     def forward(self, global_state):
         """
         Forward pass to compute state-value estimates.
@@ -152,125 +89,68 @@ class Critic(nn.Module):
 
 
 class MultiAgentRolloutBuffer:
-    """
-    Multi-agent experience replay rollout buffer.
-    Stores trajectory rollout samples across T timesteps for B base stations.
+    """One transition per physical step; timeout bootstraps but ends the GAE trace."""
 
-    Note:
-        Buffers are cleared after each policy update cycle.
-    """
+    fields = (
+        "local_obs",
+        "global_obs",
+        "actions_prb",
+        "log_probs",
+        "rewards",
+        "terminateds",
+        "truncateds",
+        "values",
+        "next_values",
+    )
+
     def __init__(self):
-        """
-        Initialize empty transition storage lists for multi-agent rollouts.
+        self.clear()
 
-        Argument:
-            None.
-
-        Return:
-            None.
-        """
-        self.local_obs = []
-        self.global_obs = []
-        self.actions_prb = []
-        self.actions_pwr = []
-        self.log_probs = []
-        self.rewards = []
-        self.terminateds = []
-        self.truncateds = []
-        self.values = []
-        self.next_values = []
-
-    def push(self, local_obs, global_state, act_prb, act_pwr, logp, reward, terminated, truncated, value, next_value):
-        """
-        Append a single-step multi-agent transition into the buffer.
-
-        Argument:
-            local_obs (np.ndarray)[B, local_obs_dim]: Local observations for all B base stations.
-            global_state (np.ndarray)[global_state_dim]: Global network state for Centralized Critic.
-            act_prb (np.ndarray)[B, n_prb]: Discrete PRB selection decisions for all BSs.
-            act_pwr (np.ndarray)[B, n_prb]: Continuous power allocation decisions for all BSs.
-            logp (np.ndarray)[B]: Joint log-probabilities of actions for each BS.
-            reward (float): Shared team reward scalar received from the environment.
-            terminated (bool or float): Terminal failure flag (e.g. lost target).
-            truncated (bool or float): Timeout truncation flag (e.g. max steps reached).
-            value (float): State-value V(S) predicted by the Centralized Critic.
-            next_value (float): State-value of the state reached by this transition.
-
-        Return:
-            None.
-        """
-        self.local_obs.append(local_obs)
-        self.global_obs.append(global_state)
-        self.actions_prb.append(act_prb)
-        self.actions_pwr.append(act_pwr)
-        self.log_probs.append(logp)
-        self.rewards.append(reward)
-        self.terminateds.append(terminated)
-        self.truncateds.append(truncated)
-        self.values.append(value)
-        self.next_values.append(next_value)
+    def push(
+        self,
+        local_obs,
+        global_state,
+        act_prb,
+        logp,
+        reward,
+        terminated,
+        truncated,
+        value,
+        next_value,
+    ):
+        values = (
+            np.array(local_obs, copy=True),
+            np.array(global_state, copy=True),
+            np.array(act_prb, copy=True),
+            np.array(logp, copy=True),
+            float(reward),
+            bool(terminated),
+            bool(truncated),
+            float(value),
+            float(next_value),
+        )
+        for name, value in zip(self.fields, values):
+            getattr(self, name).append(value)
 
     def clear(self):
-        """
-        Clear all stored rollout lists after a policy update.
-
-        Argument:
-            None.
-
-        Return:
-            None.
-        """
-        self.local_obs.clear()
-        self.global_obs.clear()
-        self.actions_prb.clear()
-        self.actions_pwr.clear()
-        self.log_probs.clear()
-        self.rewards.clear()
-        self.terminateds.clear()
-        self.truncateds.clear()
-        self.values.clear()
-        self.next_values.clear()
+        for name in self.fields:
+            setattr(self, name, [])
 
     def get(self, device="cpu"):
-        """
-        Convert stored rollout lists into PyTorch tensors and transfer to target device.
-
-        Argument:
-            device (str or torch.device): Target device ('cpu' or 'cuda') for tensor storage.
-
-        Return:
-            b_obs (torch.Tensor)[T, B, local_obs_dim]: Batched local observations.
-            b_states (torch.Tensor)[T, global_state_dim]: Batched global state vectors.
-            b_act_prb (torch.Tensor)[T, B, n_prb]: Batched discrete PRB decisions (dtype int64).
-            b_act_pwr (torch.Tensor)[T, B, n_prb]: Batched continuous power allocations (dtype float32).
-            b_logprobs (torch.Tensor)[T, B]: Batched action log-probabilities.
-            b_rewards (torch.Tensor)[T]: Batched team rewards.
-            b_terminateds (torch.Tensor)[T]: Batched terminal state flags.
-            b_truncateds (torch.Tensor)[T]: Batched timeout truncation flags.
-            b_values (torch.Tensor)[T]: Batched Centralized Critic value estimates.
-        """
-        # Re-optimize to avoid twice copy (list -> numpy -> tensor)
-        b_obs = torch.as_tensor(np.array(self.local_obs), dtype=torch.float32, device=device)
-        b_states = torch.as_tensor(np.array(self.global_obs), dtype=torch.float32, device=device)
-        b_act_prb = torch.as_tensor(np.array(self.actions_prb), dtype=torch.int64, device=device)
-        b_act_pwr = torch.as_tensor(np.array(self.actions_pwr), dtype=torch.float32, device=device)
-        b_logprobs = torch.as_tensor(np.array(self.log_probs), dtype=torch.float32, device=device)
-        b_rewards = torch.as_tensor(np.array(self.rewards), dtype=torch.float32, device=device)
-        # terminated and truncated should use torch.bool
-        b_terminateds = torch.as_tensor(np.array(self.terminateds), dtype=torch.bool, device=device)
-        b_truncateds = torch.as_tensor(np.array(self.truncateds), dtype=torch.bool, device=device)
-        b_values = torch.as_tensor(np.array(self.values), dtype=torch.float32, device=device)
-
-        return b_obs, b_states, b_act_prb, b_act_pwr, b_logprobs, b_rewards, b_terminateds, b_truncateds, b_values
+        return tuple(
+            torch.as_tensor(
+                np.asarray(getattr(self, name)),
+                device=device,
+                dtype=(
+                    torch.long
+                    if name == "actions_prb"
+                    else torch.bool
+                    if name in ("terminateds", "truncateds")
+                    else torch.float32
+                ),
+            )
+            for name in self.fields
+        )
 
     def __len__(self):
-        """
-        Get the current number of timesteps stored in the buffer.
-
-        Argument:
-            None.
-
-        Return:
-            length (int): Number of rollout steps T currently stored.
-        """
-        return len(self.local_obs)
+        return len(self.rewards)

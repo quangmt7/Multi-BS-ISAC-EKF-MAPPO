@@ -393,6 +393,15 @@ class PCRB:
         if not 0 <= target_id < self.num_target:
             raise IndexError("Invalid target_id")
 
+        # Reset information contribution of each BWP
+        for bwp_id in self.bwp_ids:
+            self.bwp_information[bwp_id][target_id] = (
+                np.zeros(
+                    (self.state_dim, self.state_dim),
+                    dtype=float
+                )
+            )
+
         if measurements is None or len(measurements) == 0:
             self._update_uncertainty(target_id)
             return
@@ -403,15 +412,6 @@ class PCRB:
 
         # Predicted information matrix
         information = np.linalg.pinv(covariance)
-
-        # Reset information contribution of each BWP
-        for bwp_id in self.bwp_ids:
-            self.bwp_information[bwp_id][target_id] = (
-                np.zeros(
-                    (self.state_dim, self.state_dim),
-                    dtype=float
-                )
-            )
 
         # Process measurements from different BWPs
         for item in measurements:

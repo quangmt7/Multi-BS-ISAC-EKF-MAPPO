@@ -26,7 +26,7 @@ hierarchical_parameters:
     replay_capacity: 10000             # Kích thước Replay Buffer cấp Frame
     hidden_dims: [256, 256]            # Lớp ẩn của Actor và 2 Critic
     grad_clip: 5.0                     # Ngưỡng cắt gradient
-    warmup_steps: 1000                 # Số frame trong buffer trước khi bắt đầu update (= 100 episode)
+    warmup_steps: 1000                 # Số frame trong buffer trước khi bắt đầu update (1 frame = 10 subframe)
 
   # ============================================================================
   # 3. Siêu tham số DQN (Subframe Level - Phân bổ rời rạc PRB)
@@ -36,29 +36,13 @@ hierarchical_parameters:
     gamma: 0.95                        # Hệ số chiết khấu cấp Subframe
     epsilon_start: 1.0                 # Epsilon ban đầu (khám phá 100%)
     epsilon_min: 0.05                  # Epsilon tối thiểu
+    epsilon_decay_unit: episode        # episode hoặc subframe
     epsilon_decay: 0.995               # Hệ số nhân epsilon sau mỗi episode
     target_update_freq: 50             # Số bước cập nhật Target Q-Network
     batch_size: 64                     # Kích thước batch update DQN
     replay_capacity: 50000             # Kích thước Replay Buffer cấp Subframe
     hidden_dims: [256, 256]            # Lớp ẩn của Q-Network
     grad_clip: 1.0                     # Ngưỡng cắt gradient
-    warmup_steps: 500                  # Số subframe trong buffer trước khi bắt đầu update (= 5 episode)
+    warmup_steps: 500                  # Số bước vật lý trước lần update đầu, tính chung cho tất cả BS
 
-  # ============================================================================
-  # 4. Trọng số Reward (Bám sát Eq. 4 và Eq. 9 trong Approach___Benchmark.pdf)
-  # ============================================================================
-  reward_weights:
-    sac:
-      alpha: 0.25                      # Trọng số AoI
-      beta: 0.50                       # Trọng số độ bất định vị trí + vận tốc EKF
-      gamma: 0.15                      # Trọng số chi phí BWP (năng lượng, chuyển mạch, phân mảnh, guardband)
-      lambda_qos: 0.30                 # Trọng số vi phạm tỷ lệ phục vụ QoS của 2 loại slice
-    
-    dqn:
-      alpha: 0.30
-      beta: 0.40
-      gamma: 0.15
-      lambda_qos: 0.20
-      k1: 1.0                          # Tham số hàm mũ f1(x) = exp(-k1 * x)
-      k2: 1.0                          # Tham số hàm mũ f2(x)
-      k3: 1.0                          # Tham số hàm mũ f3(x)
+  # Physical reward weights and shaping use mappo.yaml for all algorithms.

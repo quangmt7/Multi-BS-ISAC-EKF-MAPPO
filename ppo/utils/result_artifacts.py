@@ -64,7 +64,8 @@ class ResultArtifacts:
             (metrics_path) (Path): Metric log inside the metrics directory.
         """
 
-        del resume
+        if not resume and self.metrics_path.exists():
+            raise FileExistsError(f"Metrics already exist: {self.metrics_path}; choose a new output directory or resume")
         self.metrics_path.parent.mkdir(parents=True, exist_ok=True)
         return self.metrics_path
 
@@ -116,7 +117,8 @@ class ResultArtifacts:
             ("qos_satisfaction_rate", "QoS satisfaction rate", "comm_qos_satisfaction.png"),
             ("qos_eMBB_rate", "eMBB QoS satisfaction rate", "comm_qos_embb.png"),
             ("qos_URLLC_rate", "URLLC QoS satisfaction rate", "comm_qos_urllc.png"),
-            ("mean_urllc_latency_ms", "Mean URLLC latency (ms)", "comm_urllc_latency.png"),
+            ("mean_urllc_latency_ms", "Mean completed URLLC packet latency (ms)", "comm_urllc_latency.png"),
+            ("mean_urllc_packet_age_ms", "Mean URLLC packet age (ms)", "comm_urllc_packet_age.png"),
             ("sensing_success_prob_mean", "Mean sensing success probability", "sensing_success_prob.png"),
             ("aoi_mean", "Mean age of information (slots)", "sensing_aoi.png"),
             ("pos_error_mean_m", "Mean position error (m)", "sensing_pos_error.png"),

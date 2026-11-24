@@ -11,9 +11,8 @@ from typing import Any, Callable, Mapping
 import numpy as np
 import torch
 
-from ppo.envs.env import BaseISACEnv
 from ppo.utils.checkpoint_manager import CheckpointManager
-from ppo.utils.project_config import ProjectConfig
+from ppo.utils.project_config import ProjectConfig, episode_scenario_seed
 from ppo.utils.result_artifacts import ResultArtifacts
 from ppo.utils.runtime_contract import RuntimeContract
 
@@ -97,9 +96,6 @@ class MAPPOTrainer:
         """Run training and return metrics produced in this process.
 
         Argument:
-            (total_episodes) (int | None): Override of
-                ``mappo_parameters.training.total_episodes``; lets a resumed run go
-                further without editing the config the checkpoint was saved with.
             (bwp_mode) (bool | None): Legacy flag. Whether to allow multi-BWP PRB
                 allocation (``True``) or restrict each slice/target to at most one
                 BWP (``False``).
@@ -127,6 +123,8 @@ class MAPPOTrainer:
             total_episodes = int(training["total_episodes"])
         elif isinstance(total_episodes, bool) or not isinstance(total_episodes, int) or total_episodes <= 0:
             raise ValueError("total_episodes must be a positive integer")
+        training["total_episodes"] = total_episodes
+        step_budget = training.get("total_steps")
         episode_length = int(training["episode_length"])
         save_interval = int(training["save_interval"])
         log_interval = int(training["log_interval"])
@@ -147,12 +145,6 @@ class MAPPOTrainer:
                 initial_local_obs, initial_global_state
             )
             self._create_missing_agent_components(local_obs_dim, global_state_dim)
-            # Policy log-probabilities must cover only actions applied by the environment.
-            if isinstance(self.env, BaseISACEnv) and hasattr(getattr(self.agent, "actornetwork", None), "power_mean"):
-                raise RuntimeError(
-                    "The Env uses fixed pEach power. Migrate the PPO Actor/log-probability "
-                    "and rollout contract to PRB-only actions before training (state/trainer task)."
-                )
             self.contract.agent_structure(self.agent, local_obs_dim, global_state_dim)
             self.contract.finite_agent_parameters(self.agent)
 
@@ -168,7 +160,10 @@ class MAPPOTrainer:
             if self.resume_from is not None:
                 resume_target = self._resolve_resume_target(checkpoint_dir)
                 start_episode, global_step = checkpoint_manager.load(resume_target)
-            if start_episode > total_episodes:
+            self.contract.finite_agent_parameters(self.agent)
+            if step_budget is not None and global_step > step_budget:
+                raise ValueError("Checkpoint exceeds requested physical step budget")
+            if step_budget is None and start_episode > total_episodes:
                 raise ValueError(
                     "Checkpoint episode exceeds mappo_parameters.training.total_episodes"
                 )
@@ -178,8 +173,12 @@ class MAPPOTrainer:
             buffer = self.buffer_factory()
 
             with metrics_path.open(file_mode, encoding="utf-8") as metrics_file:
-                for episode in range(start_episode, total_episodes):
-                    local_obs, global_state = self._reset_environment(seed + episode)
+                for episode in range(start_episode, step_budget if step_budget is not None else total_episodes):
+                    if step_budget is not None and global_step >= step_budget:
+                        break
+                    episode_limit = episode_length if step_budget is None else min(episode_length,step_budget-global_step)
+                    scenario_seed = episode_scenario_seed(self.config, seed, episode)
+                    local_obs, global_state = self._reset_environment(scenario_seed)
                     reset_dims = self.contract.observation_dimensions(
                         local_obs, global_state
                     )
@@ -195,18 +194,13 @@ class MAPPOTrainer:
                     info_sums: dict[str, float] = {}
                     info_counts: dict[str, int] = {}
                     steps_taken = 0
-                    accepts_power = self._env_accepts_power()
 
-                    for step in range(episode_length):
+                    for step in range(episode_limit):
                         policy_output = self.contract.policy_output(
                             self.agent.select_action(local_obs, global_state)
                         )
-                        actions_prb, actions_pwr, log_probs, value = policy_output
-                        step_out = (
-                            self.env.step(actions_prb, actions_pwr)
-                            if accepts_power
-                            else self.env.step(actions_prb)
-                        )
+                        actions_prb, log_probs, value = policy_output
+                        step_out = self.env.step(actions_prb)
                         transition = self.contract.step_result(
                             step_out,
                             local_obs_dim,
@@ -224,13 +218,12 @@ class MAPPOTrainer:
 
                         # Time-limit truncation still permits critic bootstrapping
                         # from next_global_state inside compute_gae().
-                        reached_time_limit = step + 1 >= episode_length
+                        reached_time_limit = step + 1 >= episode_limit
                         truncated = bool(env_truncated or reached_time_limit)
                         buffer.push(
                             local_obs,
                             global_state,
                             actions_prb,
-                            actions_pwr,
                             log_probs,
                             reward,
                             terminated,
@@ -249,10 +242,11 @@ class MAPPOTrainer:
                             
 
                     # Keep on-policy transitions until the scheduled update.
+                    completed_run = global_step >= step_budget if step_budget is not None else episode + 1 == total_episodes
                     numeric_metrics = {}
                     should_update = (update_interval > 0 and
                                      ((episode + 1) % update_interval == 0 or
-                                      episode + 1 == total_episodes))
+                                      completed_run))
                     if should_update and len(buffer) > 0:
                         update_metrics = self.agent.update(buffer)
                         numeric_metrics = self._numeric_metrics(update_metrics)
@@ -260,19 +254,23 @@ class MAPPOTrainer:
                         if use_linear_lr_decay and callable(
                             getattr(self.agent, "update_learning_rate", None)
                         ):
-                            self.agent.update_learning_rate(episode, total_episodes)
+                            self.agent.update_learning_rate(global_step-1,step_budget) if step_budget is not None else self.agent.update_learning_rate(episode,total_episodes)
 
+                    duration = steps_taken * self.config["system_parameters"]["slot_duration_ms"] / 1000.0
                     record: dict[str, Any] = {
                         **self._serializable_info(final_info),
                         **self._mean_float_info(info_sums, info_counts),
                         **numeric_metrics,
                         "episode": episode + 1,
+                        "scenario_seed": scenario_seed,
                         "global_step": global_step,
                         "episode_return": float(episode_return),
                         "episode_length": steps_taken,
+                        "time_seconds": duration,
+                        "episode_duration_seconds": duration,
                     }
                     history.append(record)
-                    metrics_file.write(json.dumps(record, ensure_ascii=False) + "\n")
+                    metrics_file.write(json.dumps(record, ensure_ascii=False, allow_nan=False) + "\n")
                     metrics_file.flush()
 
                     if (episode + 1) % log_interval == 0:
@@ -282,7 +280,7 @@ class MAPPOTrainer:
                         )
                     if (should_update and
                             ((save_interval > 0 and (episode + 1) % save_interval == 0)
-                             or episode + 1 == total_episodes)):
+                             or completed_run)):
                         checkpoint_manager.save(
                             checkpoint_dir / f"episode_{episode + 1:06d}.pt",
                             episode,
@@ -331,22 +329,6 @@ class MAPPOTrainer:
         else:
             plot_fn()
 
-    def _env_accepts_power(self) -> bool:
-        """Return whether an injected non-BaseISACEnv accepts (prb, pwr) in step()."""
-        if isinstance(self.env, BaseISACEnv):
-            return False
-        try:
-            params = list(inspect.signature(self.env.step).parameters.values())
-        except (TypeError, ValueError):
-            return False
-        if any(p.kind == inspect.Parameter.VAR_POSITIONAL for p in params):
-            return True
-        positional = [
-            p for p in params
-            if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
-        ]
-        return len(positional) >= 2
-
     def _create_environment(self, bwp_mode=True) -> Any:
         """Create the integrated ISAC environment.
 
@@ -392,7 +374,7 @@ class MAPPOTrainer:
             ) from exc
 
         if self.agent is None:
-            self.agent = MAPPOAgent(self.config, local_obs_dim, global_state_dim)
+            self.agent = MAPPOAgent(self.config, local_obs_dim, global_state_dim, single_bwp=self.single_bwp_mode)
         if self.buffer_factory is None:
             self.buffer_factory = MultiAgentRolloutBuffer
 
@@ -505,13 +487,16 @@ class MAPPOTrainer:
             (None).
 
         Note:
-            Boolean flags and integer counters remain final-step values. Floating
+            Packet counts are summed. Other integer counters retain the last step. Floating
             metrics such as rate, sensing probability, penalty and interference
             are averaged over the episode.
         """
 
         for key, value in info.items():
-            if not isinstance(value, (float, np.floating)) or not np.isfinite(value):
+            packet_count = key in ("urllc_completed_packets", "urllc_on_time_packets")
+            if not (packet_count or isinstance(value, (float, np.floating))):
+                continue
+            if not np.isfinite(value):
                 continue
             name = str(key)
             sums[name] = sums.get(name, 0.0) + float(value)
@@ -520,7 +505,7 @@ class MAPPOTrainer:
     @staticmethod
     def _mean_float_info(
         sums: Mapping[str, float], counts: Mapping[str, int]
-    ) -> dict[str, float]:
+    ) -> dict[str, float | int | None]:
         """Compute episode means for accumulated environment metrics.
 
         Argument:
@@ -528,11 +513,18 @@ class MAPPOTrainer:
             (counts) (Mapping[str, int]): Number of samples for each metric.
 
         Return:
-            (means) (dict[str, float]): Per-episode mean metrics.
+            (means) (dict[str, float | int | None]): Per-episode mean metrics.
         """
 
-        return {
+        result = {
             name: total / counts[name]
             for name, total in sums.items()
             if counts.get(name, 0) > 0
         }
+        if "urllc_completed_packets" in sums:
+            packets = sums["urllc_completed_packets"]
+            result["mean_urllc_latency_ms"] = sums.get("urllc_completed_latency_sum_ms",0.)/packets if packets else None
+            result["urllc_completed_packets"] = int(packets)
+            result["urllc_on_time_packets"] = int(sums.get("urllc_on_time_packets",0.))
+            result["urllc_completed_latency_sum_ms"] = sums.get("urllc_completed_latency_sum_ms",0.)
+        return result

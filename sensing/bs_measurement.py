@@ -97,7 +97,7 @@ class BSMeasurement:
 
             return np.diag([sigma_r_sq, sigma_theta_sq, sigma_phi_sq])
     
-    def gen_meas(self, target_state, sensing_sinr):
+    def gen_meas(self, target_state, sensing_sinr, rng=None):
         """
         Generate a noisy sensing measurement.
         Argument : 
@@ -111,7 +111,7 @@ class BSMeasurement:
 
         R = self.measurement_covariance(sensing_sinr)
 
-        noise = np.random.multivariate_normal(mean=np.zeros(3),cov=R)
+        noise = (np.random if rng is None else rng).multivariate_normal(mean=np.zeros(3),cov=R)
 
         measurement = true_measurement + noise
 
