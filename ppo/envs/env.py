@@ -244,7 +244,7 @@ class BaseISACEnv(ABC):
         self.p_res = np.maximum(0., self.p_max - used @ self.pEach)
         return x_c, x_s
 
-    def _reward_components(self, aoi, u_pos, u_vel, normalized_cost, service_ratios, *, frame=False):
+    def _reward_components(self, aoi, u_pos, u_vel, normalized_cost, service_ratios, prob_suc, *, frame=False):
         """Positive benefits to maximize; frame service ratios are flat per-slice."""
         ka, ku, ks = self.reward_k
         reduce_targets = np.mean if frame else np.sum
@@ -254,8 +254,11 @@ class BaseISACEnv(ABC):
             + np.exp(-ku * np.asarray(u_vel) / self.u_vel_max)))
         r_cost = float(3 - np.asarray(normalized_cost).sum())
         r_service = float(np.mean(1 - np.exp(-ks * np.asarray(service_ratios))))
+        penalty = self.c2 * np.average(np.maximum((u_pos/self.u_pos_max) - 1, 0)) + \
+                  self.c3 * np.average(np.maximum((u_vel/self.u_vel_max) - 1, 0)) + \
+                  self.c4 * np.average(np.minimum(prob_suc - 1, 0))
         reward = float(self.alpha * sensing_aoi + self.beta * sensing_uncertainty
-                       + self.gamma * r_cost + self.lambda_service * r_service)
+                       + self.gamma * r_cost + self.lambda_service * r_service + penalty)
         return reward, {"r_aoi": sensing_aoi, "r_uncertainty": sensing_uncertainty,
                         "r_cost": r_cost, "r_comm": r_service}
 
@@ -264,7 +267,8 @@ class BaseISACEnv(ABC):
         normalized_cost = np.divide(cost, self.cost_max, out=np.zeros_like(self.cost_max), where=self.cost_max > 0)
         pi = np.asarray(self.served_ues, dtype=float)
         allocation_ratio = float(pi[self.ue_mask].sum() / self.ue_mask.sum()) if self.ue_mask.any() else 0.
-        reward, terms = self._reward_components(self.aoi, u_pos, u_vel, normalized_cost, [allocation_ratio])
+        reward, terms = self._reward_components(self.aoi, u_pos, u_vel, normalized_cost, [allocation_ratio], 
+                                                p_suc)
         return reward, reward, 0., dict(terms, reward=reward, r_penalty=0.,
             norm_aoi=float(np.mean(self.aoi) / self.a_max), cost=np.asarray(cost).copy(),
             normalized_cost=normalized_cost, suc_embb=float(pi[:self.num_embb].sum() / (self.num_embb*self.num_ue_1embb)),
@@ -358,7 +362,7 @@ class BaseISACEnv(ABC):
         local_rewards = np.array([self._reward_components(
             self.aoi, u_pos, u_vel,
             np.divide(row, self.cost_max_local, out=np.zeros_like(self.cost_max_local), where=self.cost_max_local > 0),
-            [float(self.served_ues[self.ue_mask].mean()) if self.ue_mask.any() else 0.])[0] for row in self.cost_by_bs])
+            [float(self.served_ues[self.ue_mask].mean()) if self.ue_mask.any() else 0.], self.prob_suc)[0] for row in self.cost_by_bs])
         self.aoi_norm.append(float(np.mean(self.aoi) / self.a_max))
         self.prb.append(float(x_s.sum() / (self.num_bs * self.total_prb)))
         self.power.append(float(np.sum(x_s * self.pEach[None, :, None, None]) / (self.num_bs * self.p_max)))
