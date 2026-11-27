@@ -1,3 +1,5 @@
+> Cập nhật 27/11/2026: kết quả hierarchical hiện lấy từ nhánh Tien, commit fde4630, gồm 10.000 episode × 50 bước = 500.000 bước. Cấu hình mới có SAC/DQN batch size 128. Run này dùng code nền dea5c2d, trước các sửa reward penalty, replay và metric của Khang. Các nhận xét và số liệu hierarchical bên dưới thuộc run Khang 2.000 episode trước đó, có thể truy lại ở commit d4a0599. MAPPO và single-BWP vẫn là kết quả tại d4a0599. Cần đánh giá lại với cùng ngân sách và phiên bản mô hình trước khi dùng để so sánh thuật toán.
+
 # Debug log — các mục còn mở sau training ngày 24–25/11/2026
 
 Nguồn là ba log huấn luyện trong [results/metrics](../results/metrics/). Mỗi phương pháp có 2.000 episode liên tiếp và 200.000 bước. Các so sánh đầu/cuối bên dưới lấy trung bình trên episode 1–100 và 1.901–2.000. Kết quả thuộc một lượt huấn luyện cho mỗi phương pháp. Để so sánh hiệu năng trong bài báo cần đánh giá policy đóng băng trên seed giữ riêng và lặp lại huấn luyện với nhiều seed.

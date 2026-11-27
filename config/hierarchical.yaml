@@ -4,8 +4,8 @@ hierarchical_parameters:
   # ============================================================================
   timescale:
     subframes_per_frame: 10            # F = 10 subframes trong 1 Frame (SAC ra quyết định mỗi 10 ms)
-    total_episodes: 2000               # Tổng số episode huấn luyện; giống mappo.yaml để so sánh cùng số bước môi trường
-    episode_length: 100                # Số subframe trong 1 episode (100 subframes = 10 frames)
+    total_episodes: 10000               # Tổng số episode huấn luyện hierarchical
+    episode_length: 50                # Số subframe trong 1 episode (50 subframes = 5 frames)
     save_interval: 20                  # Lưu checkpoint sau mỗi 20 episodes
     log_interval: 1                    # Ghi log sau mỗi 1 episode
     seed: 42                           # Random seed cố định để tái lập kết quả
@@ -21,7 +21,7 @@ hierarchical_parameters:
     gamma: 0.99                        # Hệ số chiết khấu cấp Frame
     tau: 0.005                         # Hệ số Soft-update Polyak cho Target Critic
     init_alpha: 0.2                    # Giá trị khởi tạo của alpha (khám phá)
-    batch_size: 32                     # Kích thước batch update SAC
+    batch_size: 128                     # Kích thước batch update SAC
     policy_delay: 2                    # Cập nhật Actor sau mỗi 2 lần cập nhật Critic
     replay_capacity: 10000             # Kích thước Replay Buffer cấp Frame
     hidden_dims: [256, 256]            # Lớp ẩn của Actor và 2 Critic
@@ -39,7 +39,7 @@ hierarchical_parameters:
     epsilon_decay_unit: episode        # episode hoặc subframe
     epsilon_decay: 0.995               # Hệ số nhân epsilon sau mỗi episode
     target_update_freq: 50             # Số bước cập nhật Target Q-Network
-    batch_size: 64                     # Kích thước batch update DQN
+    batch_size: 128                     # Kích thước batch update DQN
     replay_capacity: 50000             # Kích thước Replay Buffer cấp Subframe
     hidden_dims: [256, 256]            # Lớp ẩn của Q-Network
     grad_clip: 1.0                     # Ngưỡng cắt gradient
