@@ -4,7 +4,7 @@ hierarchical_parameters:
   # ============================================================================
   timescale:
     subframes_per_frame: 10            # F = 10 subframes trong 1 Frame (SAC ra quyết định mỗi 10 ms)
-    total_episodes: 10000               # Tổng số episode huấn luyện hierarchical
+    total_episodes: 12000               # Tổng số episode huấn luyện hierarchical
     episode_length: 50                # Số subframe trong 1 episode (50 subframes = 5 frames)
     save_interval: 20                  # Lưu checkpoint sau mỗi 20 episodes
     log_interval: 1                    # Ghi log sau mỗi 1 episode

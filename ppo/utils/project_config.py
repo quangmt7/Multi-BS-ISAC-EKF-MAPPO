@@ -350,7 +350,7 @@ class ProjectConfig:
 
         for section, names in (
             ("reward_weights", ("alpha_aoi", "beta_uncertainty", "gamma_power", "lambda_service")),
-            ("penalties", ("c1_position", "c2_velocity", "c3_service")),
+            ("penalties", ("c1_position", "c2_velocity", "c3_sensing")),
             ("reward_shaping", ("k_aoi", "k_uncertainty", "k_service")),
         ):
             sub = mappo.get(section)

@@ -69,11 +69,11 @@ mappo_parameters:
 
 
   # ----------------------------------------------------------------------------
-  # 6. Subframe reward penalties (Eq. 9)
+  # 6. Linear uncertainty and sensing penalties
   penalties:
     c1_position: 0.5
     c2_velocity: 0.5
-    c3_service: 0.5
+    c3_sensing: 0.5
 
   # ----------------------------------------------------------------------------
   # 7. Ràng buộc chỉ tiêu QoS (QoS Thresholds)

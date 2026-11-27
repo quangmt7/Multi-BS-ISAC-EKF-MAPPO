@@ -32,6 +32,7 @@ class HierISACEnv(BaseISACEnv):
         self._frame_aoi = np.zeros(self.num_targets)
         self._frame_u_pos = np.zeros(self.num_targets)
         self._frame_u_vel = np.zeros(self.num_targets)
+        self._frame_prob_suc = np.zeros(self.num_targets)
         self._frame_service = np.zeros(self.num_slices)
         self.last_frame_summary = None
         return quota.copy()
@@ -69,6 +70,7 @@ class HierISACEnv(BaseISACEnv):
         up, uv = self._get_uncertainty_summary()
         self._frame_u_pos += up
         self._frame_u_vel += uv
+        self._frame_prob_suc += self.prob_suc
         counts = self.ue_mask.sum(axis=1)
         self._frame_service += np.divide(
             self.qos_served_ues.sum(axis=1), counts,
@@ -89,11 +91,12 @@ class HierISACEnv(BaseISACEnv):
         aoi, up, uv = self._frame_aoi / n, self._frame_u_pos / n, self._frame_u_vel / n
         delta = self._frame_service / n
         normalized_cost = np.divide(cost, self.cost_max, out=np.zeros_like(self.cost_max), where=self.cost_max > 0)
-        reward, terms = self._reward_components(aoi, up, uv, normalized_cost, delta, frame=True)
+        reward, terms = self._reward_components(aoi, up, uv, normalized_cost, delta, self._frame_prob_suc / n, frame=True)
         summary = dict(subframes=n, duration_seconds=n*self.slot_duration,
             cost_mean=cost.copy(), normalized_cost=normalized_cost.copy(),
             delta_E=delta[:self.num_embb].copy(), delta_U=delta[self.num_embb:].copy(),
             service_ratios=np.concatenate((delta[:self.num_embb], delta[self.num_embb:])),
+            sensing_success_prob=self._frame_prob_suc / n,
             aoi_mean=aoi.copy(), u_pos_mean=up.copy(), u_vel_mean=uv.copy(),
             reward=reward, **terms)
         self.last_frame_summary = summary
