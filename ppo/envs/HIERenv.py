@@ -2,6 +2,16 @@ from .env import BaseISACEnv
 import numpy as np
 
 class HierISACEnv(BaseISACEnv):
+    def _reward_components(self, aoi, u_pos, u_vel, normalized_cost, service_ratios,
+                           prob_suc, *, frame=False):
+        settings = self.config["hierarchical_parameters"]["reward_weights"]
+        selected = settings["sac" if frame else "dqn"]
+        weights = [selected[name] for name in ("alpha", "beta", "gamma", "lambda_qos")]
+        shaping = self.reward_k if frame else [selected[name] for name in ("k1", "k2", "k3")]
+        return super()._reward_components(
+            aoi, u_pos, u_vel, normalized_cost, service_ratios, prob_suc,
+            frame=frame, weights=weights, shaping=shaping)
+
     def reset(self, seed=None):
         result = super().reset(seed)
         self._frame_steps = None

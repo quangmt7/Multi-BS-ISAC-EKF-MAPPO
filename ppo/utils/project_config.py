@@ -597,8 +597,19 @@ class ProjectConfig:
 
         self._validate_hierarchical_sac(hier)
         self._validate_hierarchical_dqn(hier)
-        if "reward_weights" in hier or "reward_shaping" in hier:
-            raise ValueError("Use mappo_parameters.reward_weights and reward_shaping as the single physical reward configuration")
+        weights = hier.get("reward_weights")
+        if not isinstance(weights, Mapping):
+            raise ValueError("Missing hierarchical_parameters.reward_weights")
+        for role in ("sac", "dqn"):
+            settings = weights.get(role)
+            if not isinstance(settings, Mapping):
+                raise ValueError(f"Missing hierarchical_parameters.reward_weights.{role}")
+            for name in ("alpha", "beta", "gamma", "lambda_qos"):
+                self._require_finite_number(
+                    settings.get(name), f"reward_weights.{role}.{name}", min_value=0.)
+        for name in ("k1", "k2", "k3"):
+            self._require_finite_number(
+                weights["dqn"].get(name), f"reward_weights.dqn.{name}", strictly_positive=True)
 
     @classmethod
     def _validate_agent_network(cls, settings, prefix):

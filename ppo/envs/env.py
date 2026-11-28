@@ -244,9 +244,12 @@ class BaseISACEnv(ABC):
         self.p_res = np.maximum(0., self.p_max - used @ self.pEach)
         return x_c, x_s
 
-    def _reward_components(self, aoi, u_pos, u_vel, normalized_cost, service_ratios, prob_suc, *, frame=False):
+    def _reward_components(self, aoi, u_pos, u_vel, normalized_cost, service_ratios, prob_suc, *, frame=False, weights=None, shaping=None):
         """Positive benefits to maximize; frame service ratios are flat per-slice."""
-        ka, ku, ks = self.reward_k
+        alpha, beta, gamma, service_weight = (
+            (self.alpha, self.beta, self.gamma, self.lambda_service)
+            if weights is None else weights)
+        ka, ku, ks = self.reward_k if shaping is None else shaping
         reduce_targets = np.mean if frame else np.sum
         sensing_aoi = float(reduce_targets(np.exp(-ka * np.asarray(aoi) / self.a_max)))
         sensing_uncertainty = float(reduce_targets(
@@ -258,8 +261,8 @@ class BaseISACEnv(ABC):
             self.c1_position * np.mean(np.maximum(np.asarray(u_pos) / self.u_pos_max - 1., 0.))
             + self.c2_velocity * np.mean(np.maximum(np.asarray(u_vel) / self.u_vel_max - 1., 0.))
             + self.c3_sensing * np.mean(np.maximum(1. - np.asarray(prob_suc), 0.)))
-        reward = float(self.alpha * sensing_aoi + self.beta * sensing_uncertainty
-                       + self.gamma * r_cost + self.lambda_service * r_service - penalty)
+        reward = float(alpha * sensing_aoi + beta * sensing_uncertainty
+                       + gamma * r_cost + service_weight * r_service - penalty)
         return reward, {"r_aoi": sensing_aoi, "r_uncertainty": sensing_uncertainty,
                         "r_cost": r_cost, "r_comm": r_service, "r_penalty": penalty}
 

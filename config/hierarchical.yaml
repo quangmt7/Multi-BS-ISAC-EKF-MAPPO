@@ -45,4 +45,18 @@ hierarchical_parameters:
     grad_clip: 1.0                     # Ngưỡng cắt gradient
     warmup_steps: 500                  # Số bước vật lý trước lần update đầu, tính chung cho tất cả BS
 
-  # Physical reward weights and shaping use mappo.yaml for all algorithms.
+  reward_weights:
+    sac:
+      alpha: 0.25                      # Trọng số AoI
+      beta: 0.50                       # Trọng số độ bất định vị trí + vận tốc EKF
+      gamma: 0.15                      # Trọng số chi phí BWP (năng lượng, chuyển mạch, guardband)
+      lambda_qos: 0.30                 # Trọng số vi phạm tỷ lệ phục vụ QoS của 2 loại slice
+
+    dqn:
+      alpha: 0.30
+      beta: 0.40
+      gamma: 0.15
+      lambda_qos: 0.20
+      k1: 1.0                          # Tham số hàm mũ f1(x) = exp(-k1 * x)
+      k2: 1.0                          # Tham số hàm mũ f2(x)
+      k3: 1.0                          # Tham số hàm mũ f3(x)
